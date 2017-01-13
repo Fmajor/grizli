@@ -461,7 +461,7 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         else:
             return True
     
-    def optimal_extract(self, data, bin=0, ivar=1.):        
+    def optimal_extract(self, data, bin=0, ivar=1., weight=1.):        
         """`Horne (1986) <http://adsabs.harvard.edu/abs/1986PASP...98..609H>`_ optimally-weighted 1D extraction
         
         Parameters
@@ -475,6 +475,8 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         ivar : float or `~numpy.ndarray` with shape `self.sh_beam`
             Inverse variance array or scalar float that multiplies the 
             optimal weights
+        
+        weight : TBD
             
         Returns
         -------
@@ -507,9 +509,9 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
                 """.format(ivar.shape[0], ivar.shape[1], self.sh_beam[0], 
                       self.sh_beam[1]))
                 return False
-                
-        num = self.optimal_profile*data*ivar
-        den = self.optimal_profile**2*ivar
+                            
+        num = self.optimal_profile*data*ivar*weight
+        den = self.optimal_profile**2*ivar*weight
         opt_flux = num.sum(axis=0)/den.sum(axis=0)
         opt_var = 1./den.sum(axis=0)
                 
@@ -1719,9 +1721,11 @@ class GrismFLT(object):
         
         self.direct.data['REF'] *= self.direct.ref_photflam
         
-        ## Fill empty pixels in the reference image from the SCI image
-        empty = self.direct.data['REF'] == 0
-        self.direct.data['REF'][empty] += self.direct.data['SCI'][empty]
+        # Fill empty pixels in the reference image from the SCI image, 
+        # but don't do it if direct['SCI'] is just a copy from the grism
+        if not self.direct.filter.startswith('G'):
+            empty = self.direct.data['REF'] == 0
+            self.direct.data['REF'][empty] += self.direct['SCI'][empty]
         
         # self.direct.data['ERR'] *= 0.
         # self.direct.data['DQ'] *= 0        
@@ -1920,7 +1924,7 @@ class GrismFLT(object):
                 ### Object won't disperse spectrum onto the grism image
                 if ((ymax < self.pad-5) | 
                     (ymin > self.direct.sh[0]-self.pad+5) | 
-                    (xmin == 0) | (ymax == self.direct.sh[0]) |
+                    (ymin == 0) | (ymax == self.direct.sh[0]) |
                     (xmin == 0) | (xmax == self.direct.sh[1])):
                     return True
                     
@@ -2501,6 +2505,7 @@ class BeamCutout(object):
                      (self.grism.data['ERR'] == 0) | 
                      (self.grism.data['SCI'] == 0))
                              
+        self.var = self.grism.data['ERR']**2
         self.ivar = 1/self.grism.data['ERR']**2
         self.ivar[self.mask] = 0
         
@@ -2838,6 +2843,45 @@ class BeamCutout(object):
             
         ra, dec = self.direct.wcs.all_pix2world(pix_center, 1)[0]
         return ra, dec
+    
+    def get_dispersion_PA(self, decimals=1):
+        """Compute exact PA of the dispersion axis, including tilt of the 
+        trace and the FLT WCS
+        
+        Parameters
+        ----------
+        decimals : int or None
+            Number of decimal places to round to, passed to `~numpy.round`. 
+            If None, then don't round.
+            
+        Returns
+        -------
+        dispersion_PA : float
+            PA (angle East of North) of the dispersion axis.
+        """
+        from astropy.coordinates import Angle
+        import astropy.units as u
+                    
+        ### extra tilt of the 1st order grism spectra
+        x0 =  self.beam.conf.conf['BEAMA']
+        dy_trace, lam_trace = self.beam.conf.get_beam_trace(x=507, y=507,
+                                                         dx=x0, beam='A')
+        
+        extra = np.arctan2(dy_trace[1]-dy_trace[0], x0[1]-x0[0])/np.pi*180
+                
+        ### Distorted WCS
+        crpix = self.direct.wcs.wcs.crpix
+        xref = [crpix[0], crpix[0]+1]
+        yref = [crpix[1], crpix[1]]
+        r, d = self.direct.wcs.all_pix2world(xref, yref, 1)
+        pa =  Angle((extra + 
+                     np.arctan2(np.diff(r), np.diff(d))[0]/np.pi*180)*u.deg)
+        
+        dispersion_PA = pa.wrap_at(360*u.deg).value
+        if decimals is not None:
+            dispersion_PA = np.round(dispersion_PA, decimals=decimals)
+            
+        return dispersion_PA
     
     def init_epsf(self, center=None, tol=1.e-3, yoff=0.):
         """Initialize ePSF fitting for point sources
