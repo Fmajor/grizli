@@ -113,6 +113,8 @@ def fresh_flt_file(file, preserve_dq=False, path='../RAW/', verbose=True, extra_
     Nothing, but copies the file from `path` to `./`.
         
     """
+    import shutil
+    
     local_file = os.path.basename(file)
     if preserve_dq:
         if os.path.exists(local_file):
@@ -206,7 +208,10 @@ def fresh_flt_file(file, preserve_dq=False, path='../RAW/', verbose=True, extra_
             orig_file['SCI',ext].data *= grism_pfl/flat
         
         orig_file[0].header['NPOLFILE'] = 'jref$v971826jj_npl.fits' # F814W
-        
+    
+    if head['INSTRUME'] == 'WFPC2':
+        head['DETECTOR'] = 'WFPC2'
+            
     if (head['INSTRUME'] == 'WFC3') & (head['DETECTOR'] == 'IR')&extra_badpix: 
         bp = pyfits.open(os.path.join(os.getenv('iref'),
                                       'badpix_spars200_Nov9.fits'))    
@@ -236,9 +241,40 @@ def fresh_flt_file(file, preserve_dq=False, path='../RAW/', verbose=True, extra_
                             
     if verbose:
         print('{0} -> {1} {2}'.format(orig_file.filename(), local_file, extra_msg))
-            
-    orig_file.writeto(local_file, clobber=True)
         
+    ### WFPC2            
+    if '_c0m' in file:
+        # point to FITS reference files
+        for key in ['MASKFILE', 'ATODFILE', 'BLEVFILE', 'BLEVDFIL', 'BIASFILE', 'BIASDFIL', 'DARKFILE', 'DARKDFIL', 'FLATFILE', 'FLATDFIL', 'SHADFILE']:
+            ref_file = '_'.join(head[key].split('.'))+'.fits'
+            orig_file[0].header[key] = ref_file.replace('h.fits', 'f.fits')
+        
+        waiv = orig_file[0].header['FLATFILE']
+        orig_file[0].header['FLATFILE'] = waiv.replace('.fits', '_c0h.fits')
+        # 
+        # ## testing
+        # orig_file[0].header['FLATFILE'] = 'm341820ju_pfl.fits'
+        
+        # Copy WFPC2 DQ file (c1m)
+        dqfile = os.path.join(path, file.replace('_c0m', '_c1m'))
+        print('Copy WFPC2 DQ file: {0}'.format(dqfile))
+        if os.path.exists(os.path.basename(dqfile)):
+            os.remove(os.path.basename(dqfile))
+           
+        shutil.copy(dqfile, './')
+        
+        ## Add additional masking since AstroDrizzle having trouble with flats
+        flat_file = orig_file[0].header['FLATFILE'].replace('uref$', os.getenv('uref')+'/')
+        pfl = pyfits.open(flat_file)
+        c1m = pyfits.open(os.path.basename(dqfile), mode='update')
+        for ext in [1,2,3,4]:
+            mask = pfl[ext].data > 1.3
+            c1m[ext].data[mask] |= 2
+        
+        c1m.flush()
+        
+    orig_file.writeto(local_file, clobber=True)
+    
 def apply_persistence_mask(flt_file, path='../Persistence', dq_value=1024,
                            err_threshold=0.6, grow_mask=3, verbose=True):
     """Make a mask for pixels flagged as being affected by persistence
@@ -660,7 +696,7 @@ def table_to_regions(table, output='ds9.reg'):
     fp.close()
     
 def make_drz_catalog(root='', threshold=2., get_background=True, 
-                     verbose=True, extra_config={}, sci=None):
+                     verbose=True, extra_config={}, sci=None, get_sew=False):
     """Make a SExtractor catalog from drizzle products
     
     TBD
@@ -719,6 +755,9 @@ def make_drz_catalog(root='', threshold=2., get_background=True,
                     "FLUX_RADIUS", "BACKGROUND", "FLAGS"],
                     config=config)
     
+    if get_sew:
+        return sew
+        
     output = sew(drz_file)
     cat = output['table']
     cat.meta = config
@@ -810,6 +849,8 @@ def get_wise_catalog(ra=165.86, dec=34.829694, radius=3):
     from astroquery.irsa import Irsa
     
     all_wise = 'wise_allwise_p3as_psd'
+    all_wise = 'allwise_p3as_psd'
+    
     coo = coord.SkyCoord(ra*u.deg, dec*u.deg)
     
     table = Irsa.query_region(coo, catalog=all_wise, spatial="Cone",
@@ -936,8 +977,40 @@ def get_gaia_catalog(ra=165.86, dec=34.829694, radius=3.):
     os.system('gunzip gaia.vot.gz')
     table = Table.read('gaia.vot', format='votable')
     return table
+
+def get_panstarrs_catalog(ra=0., dec=0., radius=3, columns='objName,objID,raStack,decStack,raStackErr,decStackErr,rMeanKronMag,rMeanKronMagErr', max_records=10000):
+    """TBD
+    """
+    try:
+        import httplib
+        from urllib import urlencode
+        from urllib import urlopen
+    except:
+        # python 3
+        import http.client as httplib
+        from urllib.parse import urlencode
+        from urllib.request import urlopen
+        
+    query_url = "http://archive.stsci.edu/panstarrs/search.php?RA={ra}&DEC={dec}&radius={radius}&max_records={max_records}&outputformat=CSV&action=Search&coordformat=dec&selectedColumnsCsv={columns}&raStack%3E=0".format(ra=ra, dec=dec, radius=radius, max_records=max_records, columns=columns)
     
-def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True):
+    print('Query PanSTARRS catalog ({ra},{dec})'.format(ra=ra, dec=dec))
+    
+    query = urlopen(query_url)
+    lines = [bytes(columns+'\n', encoding='utf-8')]
+    lines.extend(query.readlines()[2:])
+    
+    csv_file = '/tmp/ps1_{ra}_{dec}.csv'.format(ra=ra, dec=dec)
+    fp = open(csv_file,'wb')
+    fp.writelines(lines)
+    fp.close()
+    
+    table = utils.GTable.read(csv_file)
+    clip = (table['rMeanKronMag'] > 0) & (table['raStack'] > 0)
+    table['ra'] = table['raStack']
+    table['dec'] = table['decStack']
+    return table[clip]
+    
+def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, reference_catalogs = ['GAIA', 'PS1', 'SDSS', 'WISE']):
     """Decide what reference astrometric catalog to use
     
     First search SDSS, then WISE looking for nearby matches.  
@@ -956,6 +1029,10 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True):
         the external (low precision) catalogs so that you're matching
         HST-to-HST astrometry.
     
+    reference_catalogs : list
+        Order in which to query reference catalogs.  Options are 'GAIA',
+        'PS1' (STScI PanSTARRS), 'SDSS', 'WISE'.
+        
     Returns
     -------
     radec : str
@@ -965,70 +1042,101 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True):
         Provenance of the `radec` list.
     
     """
-    try:
-        sdss = get_sdss_catalog(ra=ra, dec=dec, radius=radius)
-    except:
-        print('SDSS query failed')
-        sdss = []
+    # try:
+    #     sdss = get_sdss_catalog(ra=ra, dec=dec, radius=radius)
+    # except:
+    #     print('SDSS query failed')
+    #     sdss = []
+    # 
+    # if sdss is None:
+    #     sdss = []
+        
+    query_functions = {'SDSS':get_sdss_catalog, 
+                       'GAIA':get_gaia_catalog,
+                       'PS1':get_panstarrs_catalog,
+                       'WISE':get_wise_catalog}
+      
+    # if len(sdss) > 5:
+    #     table_to_regions(sdss, output='{0}_sdss.reg'.format(product))
+    #     sdss['ra','dec'].write('{0}_sdss.radec'.format(product), 
+    #                             format='ascii.commented_header')
+    #     radec = '{0}_sdss.radec'.format(product)
+    #     ref_catalog = 'SDSS'
+    #     has_catalog = True
     
-    if sdss is None:
-        sdss = []
-    
+    ### Try queries
     has_catalog = False
-            
-    if len(sdss) > 5:
-        table_to_regions(sdss, output='{0}_sdss.reg'.format(product))
-        sdss['ra','dec'].write('{0}_sdss.radec'.format(product), 
-                                format='ascii.commented_header')
-        radec = '{0}_sdss.radec'.format(product)
-        ref_catalog = 'SDSS'
-        has_catalog = True
+    ref_catalog = 'None'
+    ref_cat = []
+    
+    for ref_src in reference_catalogs:
+        try:
+            ref_cat = query_functions[ref_src](ra=ra, dec=dec, radius=2)
+            if len(ref_cat) < 2:
+                raise ValueError
+                
+            table_to_regions(ref_cat, output='{0}_{1}.reg'.format(product,
+                                                         ref_src.lower()))
+            ref_cat['ra','dec'].write('{0}_{1}.radec'.format(product, 
+                                                         ref_src.lower()),
+                                    format='ascii.commented_header')
+
+            radec = '{0}_{1}.radec'.format(product, ref_src.lower())
+            ref_catalog = ref_src
+            has_catalog = True
+            break
+        except:
+            print('{0} query failed'.format(ref_src))
+            has_catalog = False
+        
     
     ### GAIA
-    if not has_catalog:
-        try:
-            gaia = get_gaia_catalog(ra=ra, dec=dec, radius=2)
-            if len(gaia) < 2:
-                raise ValueError
-            table_to_regions(gaia, output='{0}_gaia.reg'.format(product))
-            gaia['ra','dec'].write('{0}_gaia.radec'.format(product),
-                                    format='ascii.commented_header')
-
-            radec = '{0}_gaia.radec'.format(product)
-            ref_catalog = 'GAIA'
-            has_catalog = True
-        except:
-            print('GAIA query failed')
-            has_catalog = False
-    
-    ### WISE
-    if not has_catalog:    
-        try:
-            wise = get_wise_catalog(ra=ra, dec=dec, radius=2)
+    # if not has_catalog:
+    #     try:
+    #         gaia = get_gaia_catalog(ra=ra, dec=dec, radius=2)
+    #         if len(gaia) < 2:
+    #             raise ValueError
+    #         table_to_regions(gaia, output='{0}_gaia.reg'.format(product))
+    #         gaia['ra','dec'].write('{0}_gaia.radec'.format(product),
+    #                                 format='ascii.commented_header')
+    # 
+    #         radec = '{0}_gaia.radec'.format(product)
+    #         ref_catalog = 'GAIA'
+    #         has_catalog = True
+    #     except:
+    #         print('GAIA query failed')
+    #         has_catalog = False
+    # 
+    # ### WISE
+    # if not has_catalog:    
+    #     try:
+    #         wise = get_wise_catalog(ra=ra, dec=dec, radius=2)
+    #         
+    #         table_to_regions(wise, output='{0}_wise.reg'.format(product))
+    #         wise['ra','dec'].write('{0}_wise.radec'.format(product),
+    #                                 format='ascii.commented_header')
+    # 
+    #         radec = '{0}_wise.radec'.format(product)
+    #         ref_catalog = 'WISE'
+    #         has_catalog=True
+    #     except:
+    #         print('WISE query failed')
+    #         has_catalog=False
             
-            table_to_regions(wise, output='{0}_wise.reg'.format(product))
-            wise['ra','dec'].write('{0}_wise.radec'.format(product),
-                                    format='ascii.commented_header')
-
-            radec = '{0}_wise.radec'.format(product)
-            ref_catalog = 'WISE'
-        except:
-            print('WISE query failed')
-    
     #### WISP, check if a catalog already exists for a given rootname and use 
     #### that if so.
     cat_files = glob.glob('-f1'.join(product.split('-f1')[:-1]) + '-f*cat')
     if len(cat_files) > 0:
-        cat = Table.read(cat_files[0], format='ascii.commented_header')
+        ref_cat = Table.read(cat_files[0], format='ascii.commented_header')
         root = cat_files[0].split('.cat')[0]
-        cat['X_WORLD','Y_WORLD'].write('{0}.radec'.format(root),
+        ref_cat['X_WORLD','Y_WORLD'].write('{0}.radec'.format(root),
                                 format='ascii.commented_header')
         
         radec = '{0}.radec'.format(root)
         ref_catalog = 'VISIT'
     
     if verbose:
-        print('{0} - Reference RADEC: {1} [{2}]'.format(product, radec, ref_catalog))    
+        print('{0} - Reference RADEC: {1} [{2}] N={3}'.format(product, radec, ref_catalog, len(ref_cat)))    
     
     return radec, ref_catalog
     
@@ -1037,10 +1145,12 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
                                align_mag_limits = [14,23],
                                column_average=True, 
                                run_tweak_align=True,
+                               tweak_fit_order=-1,
                                skip_direct=False,
                                fix_stars=True,
                                tweak_max_dist=1.,
-                               tweak_threshold=1.5):
+                               tweak_threshold=1.5,
+                             reference_catalogs=['GAIA','PS1','SDSS','WISE']):
     """Full processing of a direct + grism image visit.
     
     TBD
@@ -1057,6 +1167,8 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
     
     ### Copy FLT files from ../RAW
     isACS = '_flc' in direct['files'][0]
+    isWFPC2 = '_c0m' in direct['files'][0]
+    
     if not skip_direct:
         for file in direct['files']:
             crclean = isACS & (len(direct['files']) == 1)
@@ -1064,9 +1176,10 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
             updatewcs.updatewcs(file, verbose=False)
     
         ### Make ASN
-        asn = asnutil.ASNTable(direct['files'], output=direct['product'])
-        asn.create()
-        asn.write()
+        if not isWFPC2:
+            asn = asnutil.ASNTable(inlist=direct['files'], output=direct['product'])
+            asn.create()
+            asn.write()
     
     ### Initial grism processing
     skip_grism = (grism == {}) | (grism is None) | (len(grism) == 0)
@@ -1084,31 +1197,36 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
         bits = 64+32
         driz_cr_snr = '3.5 3.0'
         driz_cr_scale = '1.2 0.7'
+    elif isWFPC2:
+        bits = 64+32
+        driz_cr_snr = '3.5 3.0'
+        driz_cr_scale = '1.2 0.7'
     else:
         bits = 576
         driz_cr_snr = '8.0 5.0'
         driz_cr_scale = '2.5 0.7'
     
     if not skip_direct:
-        if (not isACS) & run_tweak_align:
+        if (not isACS) & (not isWFPC2) & run_tweak_align:
             #if run_tweak_align:
             tweak_align(direct_group=direct, grism_group=grism,
                         max_dist=tweak_max_dist, key=' ', drizzle=False,
-                        threshold=tweak_threshold)
+                        threshold=tweak_threshold, fit_order=tweak_fit_order)
       
         ### Get reference astrometry from SDSS or WISE
         if radec is None:
             im = pyfits.open(direct['files'][0])
             radec, ref_catalog = get_radec_catalog(ra=im[0].header['RA_TARG'],
                             dec=im[0].header['DEC_TARG'], 
-                            product=direct['product'])
+                            product=direct['product'],
+                            reference_catalogs=reference_catalogs)
         
             if ref_catalog == 'VISIT':
                 align_mag_limits = [16,23]
-            elif ref_catalog == 'WISE':
-                align_mag_limits = [16,21]
             elif ref_catalog == 'SDSS':
                 align_mag_limits = [16,21]
+            elif ref_catalog == 'PS1':
+                align_mag_limits = [16,22]
             elif ref_catalog == 'WISE':
                 align_mag_limits = [15,20]
         else:
@@ -1157,7 +1275,13 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
                              final_wht_type='IVM', resetbits=0)
             
         ### Make catalog & segmentation image
-        cat = make_drz_catalog(root=direct['product'], threshold=2)
+        if isWFPC2:
+            thresh = 8
+        else:
+            thresh = 2
+        
+        cat = make_drz_catalog(root=direct['product'], threshold=thresh)
+        
         if radec == 'self':
             okmag = ((cat['MAG_AUTO'] > align_mag_limits[0]) & 
                     (cat['MAG_AUTO'] < align_mag_limits[1]))
@@ -1226,11 +1350,18 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
     
         ### Make DRZ catalog again with updated DRZWCS
         clean_drizzle(direct['product'])
-        cat = make_drz_catalog(root=direct['product'], threshold=1.6)
+        
+        if isWFPC2:
+            thresh = 8
+        else:
+            thresh = 1.6
+        
+        cat = make_drz_catalog(root=direct['product'], threshold=thresh)
+        
         table_to_regions(cat, '{0}.cat.reg'.format(direct['product']))
         table_to_radec(cat, '{0}.cat.radec'.format(direct['product']))
         
-        if (fix_stars) & (not isACS):
+        if (fix_stars) & (not isACS) & (not isWFPC2):
             fix_star_centers(root=direct['product'], drizzle=True, mag_lim=21)
         
     ################# 
@@ -1332,11 +1463,12 @@ def set_grism_dfilter(direct, grism):
         flt.flush()
     
 def tweak_align(direct_group={}, grism_group={}, max_dist=1., key=' ', 
-                threshold=3, drizzle=False):
+                threshold=3, drizzle=False, fit_order=-1):
     """
     Intra-visit shifts (WFC3/IR)
     """
     from drizzlepac.astrodrizzle import AstroDrizzle
+    from scipy import polyfit, polyval
     
     if len(direct_group['files']) < 2:
         print('Only one direct image found, can\'t compute shifts!')
@@ -1350,6 +1482,8 @@ def tweak_align(direct_group={}, grism_group={}, max_dist=1., key=' ',
     
     fp = open('{0}_shifts.log'.format(direct_group['product']), 'w')
     fp.write('# flt xshift yshift rot scale N rmsx rmsy\n')
+    fp.write('# fit_order: {0}\n'.format(fit_order))
+    
     for k in grism_matches:
         d = shift_dict[k]
         fp.write('# match[\'{0}\'] = {1}\n'.format(k, grism_matches[k]))
@@ -1360,6 +1494,22 @@ def tweak_align(direct_group={}, grism_group={}, max_dist=1., key=' ',
     
     fp.close()
     
+    # Fit a polynomial, e.g., for DASH
+    if fit_order > 0:
+        print('Fit polynomial order={0} to shifts.'.format(fit_order))
+        
+        shifts = np.array([shift_dict[k][:2] for k in sorted(shift_dict)])
+        t = np.arange(shifts.shape[0])
+        cx = polyfit(t, shifts[:,0], fit_order)
+        sx = polyval(cx, t)
+        cy = polyfit(t, shifts[:,1], fit_order)
+        sy = polyval(cy, t)
+        fit_shift = np.array([sx, sy]).T
+        
+        for ik, k in enumerate(sorted(shift_dict)):
+            shift_dict[k][:2] = fit_shift[ik,:]
+    
+    ## Apply the shifts to the header WCS
     apply_tweak_shifts(wcs_ref, shift_dict, grism_matches=grism_matches,
                        verbose=False)
 
@@ -2278,10 +2428,14 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
     ## Drizzle can only handle 999 files at a time
     if check_overlaps:
         for group in exposure_groups:
+            if 'reference' not in group:
+                continue
+            
             if 'footprints' in group:
                 footprints = group['footprints']
             else:
                 footprints = []
+                files=group['files']
                 for i in range(len(files)):
                     print(i, files[i])
                     im = pyfits.open(files[i])
