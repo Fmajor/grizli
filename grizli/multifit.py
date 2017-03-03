@@ -11,6 +11,9 @@ import matplotlib.pyplot as plt
 from astropy.table import Table
 import astropy.io.fits as pyfits
 
+import sys
+import pdb
+
 ## local imports
 from . import grismconf
 from . import utils
@@ -1674,7 +1677,12 @@ class MultiBeam():
         if make_figure:
             fig = self.show_redshift_fit(fit_data, figsize=figsize)
             #fig.savefig('fit.pdf')
-            
+
+        if 'ffull' not in fit_data.keys():
+            pdb.set_trace()
+        else:
+            print(' -   >   fit_data has got the keys for 1D extraction!')
+
         return fit_data, fig
     
     def run_individual_fits(self, z=0, templates={}):
@@ -1753,7 +1761,7 @@ class MultiBeam():
 
         return line_flux, line_err, coeffs_list, chi2_list, DoF_list
     
-    def show_redshift_fit(self, fit_data, plot_flambda=True, figsize=[8,5]):
+    def show_redshift_fit(self, fit_data, plot_flambda=True, figsize=[8,5], return_1Dextraction=True):
         """TBD
         """
         fig = plt.figure(figsize=figsize)
@@ -1862,7 +1870,13 @@ class MultiBeam():
             wfull[grism] = np.append(wfull[grism], wave[okerr])
             ffull[grism] = np.append(ffull[grism], flux[okerr])
             efull[grism] = np.append(efull[grism], err[okerr])
-                
+
+        if return_1Dextraction:
+            print(' -   >   >   updating fit_data with 1D optimal extraction')
+            fit_data['wfull'] = wfull
+            fit_data['ffull'] = ffull
+            fit_data['efull'] = efull
+
         for grism in grisms:                        
             if self.Ngrism[grism] > 1:
                 ## binned
