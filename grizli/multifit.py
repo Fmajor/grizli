@@ -11,9 +11,6 @@ import matplotlib.pyplot as plt
 from astropy.table import Table
 import astropy.io.fits as pyfits
 
-import sys
-import pdb
-
 ## local imports
 from . import grismconf
 from . import utils
@@ -1230,10 +1227,10 @@ class MultiBeam():
                 cont1d += temp_i
             else:
                 line1d[key.split()[1]] = temp_i
-                line_flux[key.split()[1]] = np.array([coeffs_full[i0+i]*fscl, 
+                line_flux[key.split()[1]] = np.array([coeffs_full[i0+i]*fscl,
                                              line_flux_err[i0+i]*fscl])
 
-        return line_flux, cont1d, line1d, model1d, model_continuum
+        return line_flux, cont1d, line1d, model1d, model_continuum, fscl
     
     @classmethod
     def load_templates(self, fwhm=400, line_complexes=True, stars=False,
@@ -1268,7 +1265,8 @@ class MultiBeam():
             
                 >>> full_line_list = ['SIII', 'SII', 'Ha', 'OI-6302', 
                                       'OIII', 'Hb', 'OIII-4363', 
-                                      'Hg', 'Hd', 'NeIII', 'OII']
+                                      'Hg', 'Hd', 'NeIII', 'OII', 'MgII']
+                NOTE: len(full_line_list) = 12
             
             The full list of implemented lines is in `~grizli.utils.get_line_wavelengths`.
         
@@ -1647,7 +1645,7 @@ class MultiBeam():
         
         # Parse results
         out2 = self.parse_fit_outputs(zbest, templates, coeffs_full, A)
-        line_flux, cont1d, line1d, model1d, model_continuum = out2
+        line_flux, cont1d, line1d, model1d, model_continuum, fscl = out2
         
         # Output dictionary with fit parameters
         fit_data = OrderedDict()
@@ -1670,7 +1668,9 @@ class MultiBeam():
         fit_data['model1d'] = model1d
         fit_data['cont1d'] = cont1d
         fit_data['line1d'] = line1d
-        
+        fit_data['fscl'] = fscl     #<<170303>> added by Xin
+        fit_data['Ngrism'] = self.Ngrism    #<<170303>> added by Xin
+
         #return fit_data
         
         fig = None   
@@ -1678,10 +1678,10 @@ class MultiBeam():
             fig = self.show_redshift_fit(fit_data, figsize=figsize)
             #fig.savefig('fit.pdf')
 
-        if 'ffull' not in fit_data.keys():
-            pdb.set_trace()
-        else:
-            print(' -   >   fit_data has got the keys for 1D extraction!')
+        # if 'ffull' not in fit_data.keys():
+        #     pdb.set_trace()
+        # else:
+        #     print(' -   >   fit_data has got the keys for 1D extraction!')
 
         return fit_data, fig
     
@@ -1876,6 +1876,7 @@ class MultiBeam():
             fit_data['wfull'] = wfull
             fit_data['ffull'] = ffull
             fit_data['efull'] = efull
+            fit_data['plot_flambda'] = plot_flambda
 
         for grism in grisms:                        
             if self.Ngrism[grism] > 1:
@@ -2280,9 +2281,10 @@ class MultiBeam():
         fit['id'] = self.id
         fit['fit_bg'] = self.fit_bg
         fit['grism_files'] = [b.grism.parent_file for b in self.beams]
-        for item in ['A','coeffs','model_full','model_cont']:
-            if item in fit:
-                p = fit.pop(item)
+        # for item in ['A','coeffs','model_full','model_cont']:
+        #     if item in fit:
+        #         p = fit.pop(item)
+        #<<170303>> commented by Xin
             
         #p = fit.pop('coeffs')
         
