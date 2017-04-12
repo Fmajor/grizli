@@ -104,7 +104,7 @@ def radec_to_targname(ra=0, dec=0, header=None):
     return targname
     
 def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
-                    get_footprint = False, 
+                    get_footprint = False, output_info_name = None,
                     translate = {'AEGIS-':'aegis-', 
                                  'COSMOS-':'cosmos-', 
                                  'GNGRISM':'goodsn-', 
@@ -181,8 +181,12 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
         Nested dictionary split by filter and then PA_V3.  This shouldn't  
         be used if exposures from completely disjoint pointings are stored
         in the same working directory.
+
+    --- Additional Note ---
+    *<<170411>> Xin added code to output info as ascii table.
     """    
-    
+    import astropy.io.ascii as ascii
+
     if info is None:
         if not files:
             files=glob.glob('*flt.fits')
@@ -210,7 +214,7 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
     target_list = []
     for i in range(len(info)):
         #### Replace ANY targets with JRhRmRs-DdDmDs
-        if info['targname'][i] == 'ANY':            
+        if info['targname'][i] == 'ANY':
             if use_visit:
                 new_targname=info['file'][i][:6]
             else:
@@ -233,7 +237,11 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
     
     output_list = [] #OrderedDict()
     filter_list = OrderedDict()
-    
+
+    #<<170411>> added by Xin
+    product_list = ['temp']*len(info)
+    visits_sequence = []
+
     for filter in np.unique(info['filter']):
         filter_list[filter] = OrderedDict()
         
@@ -296,7 +304,12 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
 
                     for tstart, file in zip(info['expstart'][use],
                                             info['file'][use]):
-                                            
+                        #<<170411>> added by Xin
+                        ind = np.where(info['file'] == file)[0]
+                        assert (len(ind)==1), ' ERR: multiple entries found!'
+                        product_list[ind[0]] = visit_product.lower()
+                        visits_sequence.append(ind[0])
+
                         f = file.split('.gz')[0]
                         if f not in exposure_list:
                             visit_list.append(str(f))
@@ -308,7 +321,7 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                     filter_list[filter][angle].extend(visit_list)
                     
                     if uniquename:
-                        print(visit_product, len(visit_list))
+                        print(visit_product.lower(), len(visit_list))
                         so = np.argsort(visit_start)
                         exposure_list = np.array(visit_list)[so]
                         #output_list[visit_product.lower()] = visit_list
@@ -318,14 +331,22 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                         output_list.append(d)
                         
                 if not uniquename:
-                    print(product, len(exposure_list))
+                    print(product.lower(), len(exposure_list))
                     so = np.argsort(exposure_start)
                     exposure_list = np.array(exposure_list)[so]
                     #output_list[product.lower()] = exposure_list
                     d = OrderedDict(product=str(product.lower()),
                                     files=list(np.array(exposure_list)[so]))
                     output_list.append(d)
-    
+
+    ### output info as an ascii table <<170411>> added by Xin
+    if output_info_name:
+        info['product'] = product_list
+        info = info[np.asarray(visits_sequence)]
+        assert isinstance(output_info_name, np.str), ' ERR: keyword type incorrect'
+        info_out = info['product', 'file', 'filter', 'date-obs', 'time-obs', 'expstart', 'exptime', 'pa_v3', 'progIDs']
+        ascii.write(info_out, output_info_name, delimiter=' ', overwrite=True)
+
     ### Get visit footprint from FLT WCS
     if get_footprint:
         from shapely.geometry import Polygon
