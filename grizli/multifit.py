@@ -2093,6 +2093,7 @@ class MultiBeam():
                                     continue
                                     
                                 beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                                # beam.ivar[lcontam > 0] *= 0   #<<170414>> added by Xin as an extreme case of masking everything
 
                 hdu = drizzle_to_wavelength(self.beams, ra=self.ra, 
                                             dec=self.dec, wave=line_wave_obs,

@@ -345,7 +345,10 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
         info = info[np.asarray(visits_sequence)]
         assert isinstance(output_info_name, np.str), ' ERR: keyword type incorrect'
         info_out = info['product', 'file', 'filter', 'date-obs', 'time-obs', 'expstart', 'exptime', 'pa_v3', 'progIDs']
-        ascii.write(info_out, output_info_name, delimiter=' ', overwrite=True)
+        try:
+            ascii.write(info_out, output_info_name, delimiter=' ', overwrite=True)
+        except:
+            ascii.write(info_out, output_info_name, delimiter=' ')
 
     ### Get visit footprint from FLT WCS
     if get_footprint:
