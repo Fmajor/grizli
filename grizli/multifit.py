@@ -2032,9 +2032,13 @@ class MultiBeam():
         
         return fig, hdu_sci
     
-    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3):
+    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3,
+                          mask_lcontam_ratio=1.):
         """
         TBD
+        :param mask_lcontam_ratio: a number (>0)                                                <<170414>> added by Xin
+                masking pixels where contam line flux / line of interest flux > `mask_lcontam_ratio`
+                `mask_lcontam_ratio`=0  =>  an extreme case of masking everything
         """
         line_wavelengths, line_ratios = utils.get_line_wavelengths()
         hdu_full = []
@@ -2092,8 +2096,8 @@ class MultiBeam():
                                     #print beam.grism.parent_file, l
                                     continue
                                     
-                                beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
-                                # beam.ivar[lcontam > 0] *= 0   #<<170414>> added by Xin as an extreme case of masking everything
+                                # beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                                beam.ivar[lcontam > mask_lcontam_ratio*lmodel] *= 0    #<<170414>> added by Xin
 
                 hdu = drizzle_to_wavelength(self.beams, ra=self.ra, 
                                             dec=self.dec, wave=line_wave_obs,
