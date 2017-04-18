@@ -1944,11 +1944,12 @@ class MultiBeam():
         fig.tight_layout(pad=0.1)
         return fig
     
-    def redshift_fit_twod_figure(self, fit, spatial_scale=1, dlam=46., NY=10,
-                                 figsize=[8,3.5], **kwargs):
+    def redshift_fit_twod_figure(self, fit, spatial_scale=1, dlam=46., NY=10, kernel='point', pixfrac=0.6, ds9=None,
+                                 figsize=[8,4.8], **kwargs):
         """Make figure of 2D spectrum
         
         TBD
+        #<<170417>> Xin: added kws `kernel`, `pixfrac`, `ds9`. Also added the panel of 'rms' into the 2D.png plot.
         """        
         ### xlimits        
         xmin, xmax = 1.e5, 0
@@ -1958,24 +1959,24 @@ class MultiBeam():
                 xmin = np.minimum(xmin, grism_limits[g][0])
                 xmax = np.maximum(xmax, grism_limits[g][1])
         
-        hdu_sci = drizzle_2d_spectrum(self.beams, ds9=None, NY=NY,
+        hdu_sci = drizzle_2d_spectrum(self.beams, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax], 
                                       fcontam=self.fcontam)
                                   
         ### Continuum model
         cont = self.reshape_flat(fit['model_cont'])        
-        hdu_con = drizzle_2d_spectrum(self.beams, data=cont, ds9=None, NY=NY,
+        hdu_con = drizzle_2d_spectrum(self.beams, data=cont, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax], 
                                       fcontam=self.fcontam)
         
         full = self.reshape_flat(fit['model_full'])        
-        hdu_full = drizzle_2d_spectrum(self.beams, data=full, ds9=None, NY=NY,
+        hdu_full = drizzle_2d_spectrum(self.beams, data=full, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax],
                                       fcontam=self.fcontam)
         
@@ -1990,15 +1991,15 @@ class MultiBeam():
         extent = [hdu_full[0].header['WMIN'], hdu_full[0].header['WMAX'],
                   0, sh[0]]
                   
+        ### Plotting
         fig = plt.figure(figsize=figsize)
-        show = [hdu_sci[1].data, hdu_full[1].data,
-                hdu_sci[1].data-hdu_con[1].data]
-        
-        desc = [r'$Contam$'+'\n'+r'$Cleaned$', r'$Model$', r'$Line$'+'\n'+r'$Residual$']
+
+        show = [hdu_sci[1].data, hdu_full[1].data, hdu_sci[1].data-hdu_con[1].data, np.ma.masked_equal(np.sqrt(1./hdu_sci[2].data), 0.)]
+        desc = [r'$Contam$'+'\n'+r'$Cleaned$', r'$Model$', r'$Line$'+'\n'+r'$Residual$', r'RMS']
         
         i=0
-        for data_i, desc_i in zip(show, desc):
-            ax = fig.add_subplot(11+i+100*len(show))        
+        for data_i, desc_i in zip(show[:-1], desc[:-1]):
+            ax = fig.add_subplot(11+i+100*len(show))
             ax.imshow(data_i, origin='lower',
                       interpolation='Nearest', vmin=-0.1*vmax, vmax=vmax, 
                       extent=extent, cmap = plt.cm.viridis_r, 
@@ -2006,9 +2007,14 @@ class MultiBeam():
             
             ax.set_yticklabels([])
             ax.set_ylabel(desc_i)
-            
             i+=1
-            
+
+        ## Plotting the 'RMS' panel
+        ax = fig.add_subplot(11+i+100*len(show))
+        ax.imshow(show[i], origin='lower', interpolation='Nearest', vmin=0., vmax=0.03, extent=extent, cmap=plt.cm.jet, aspect='auto')
+        ax.set_yticklabels([])
+        ax.set_ylabel(desc[i])
+
         for ax in fig.axes[:-1]:
             ax.set_xticklabels([])
             
@@ -2228,7 +2234,10 @@ class MultiBeam():
         spec_in = copy.copy(pspec2)
         spec_in['fit'] = fit
         spec_in['dlam'] = dlam
-        
+        #<<170417>>XIN: pass 'kernel' and 'pixfrac' to `redshift_fit_twod_figure()`
+        spec_in['kernel'] = pline['kernel']
+        spec_in['pixfrac'] = pline['pixfrac']
+
         fig2, hdu2 = self.redshift_fit_twod_figure(**spec_in)#, kwargs=spec2) #dlam=dlam, spatial_scale=spatial_scale, NY=NY)
         
         ### Update master model
@@ -2612,7 +2621,7 @@ def get_redshift_fit_defaults():
                  delta_chi2_threshold=0.004, fitter='nnls', 
                  prior=None, templates={}, figsize=[8,5])
     
-    pspec2_def = dict(dlam=0, spatial_scale=1, NY=20, figsize=[8,3.5])
+    pspec2_def = dict(dlam=0, spatial_scale=1, NY=20, figsize=[8,3.5], ds9=None)    #<<170417>> Xin
     pline_def = dict(size=20, pixscale=0.1, pixfrac=0.2, kernel='square', 
                      wcs=None)
 
@@ -2744,7 +2753,7 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
                          wcslin_pscale=1.0, uniqid=1, 
                          pixfrac=pixfrac, kernel=kernel, fillval=0, 
                          stepsize=10, wcsmap=None)
-        
+
         if ds9 is not None:
             ds9.view(outsci/output_wcs.pscale**2, header=out_header)
     
