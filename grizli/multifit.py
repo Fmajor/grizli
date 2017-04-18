@@ -1945,7 +1945,7 @@ class MultiBeam():
         return fig
     
     def redshift_fit_twod_figure(self, fit, spatial_scale=1, dlam=46., NY=10, kernel='point', pixfrac=0.6, ds9=None,
-                                 figsize=[8,4.8], **kwargs):
+                                 figsize=[8,4.8], hw_show=25, **kwargs):
         """Make figure of 2D spectrum
         
         TBD
@@ -1996,22 +1996,27 @@ class MultiBeam():
 
         show = [hdu_sci[1].data, hdu_full[1].data, hdu_sci[1].data-hdu_con[1].data, np.ma.masked_equal(np.sqrt(1./hdu_sci[2].data), 0.)]
         desc = [r'$Contam$'+'\n'+r'$Cleaned$', r'$Model$', r'$Line$'+'\n'+r'$Residual$', r'RMS']
-        
+
+        #------------ get cut_ind
+        hw_old = NY; ctr_old = hw_old-0.5
+        cut_ind = np.arange(int(np.ceil(ctr_old-hw_show)),int(np.ceil(ctr_old+hw_show)))
+
         i=0
         for data_i, desc_i in zip(show[:-1], desc[:-1]):
             ax = fig.add_subplot(11+i+100*len(show))
-            ax.imshow(data_i, origin='lower',
+            ax.imshow(data_i[cut_ind, :], origin='lower',
                       interpolation='Nearest', vmin=-0.1*vmax, vmax=vmax, 
                       extent=extent, cmap = plt.cm.viridis_r, 
                       aspect='auto')
-            
+            ax.set_yticks([])
             ax.set_yticklabels([])
             ax.set_ylabel(desc_i)
             i+=1
 
         ## Plotting the 'RMS' panel
         ax = fig.add_subplot(11+i+100*len(show))
-        ax.imshow(show[i], origin='lower', interpolation='Nearest', vmin=0., vmax=0.03, extent=extent, cmap=plt.cm.jet, aspect='auto')
+        ax.imshow(show[i][cut_ind, :], origin='lower', interpolation='Nearest', vmin=0., vmax=0.02, extent=extent, cmap=plt.cm.jet, aspect='auto')
+        ax.set_yticks([])
         ax.set_yticklabels([])
         ax.set_ylabel(desc[i])
 
@@ -2039,10 +2044,10 @@ class MultiBeam():
         return fig, hdu_sci
     
     def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3,
-                          mask_lcontam_ratio=1.):
+                          mask_lcontam_ratio=0.):
         """
         TBD
-        :param mask_lcontam_ratio: a number (>0)                                                <<170414>> added by Xin
+        :param mask_lcontam_ratio: a number (>=0)                                                <<170414>> added by Xin
                 masking pixels where contam line flux / line of interest flux > `mask_lcontam_ratio`
                 `mask_lcontam_ratio`=0  =>  an extreme case of masking everything
         """
