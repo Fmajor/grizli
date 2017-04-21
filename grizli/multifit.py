@@ -2155,9 +2155,9 @@ class MultiBeam():
         
         return hdu_full
         
-    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, 
-                      force_line=['Ha', 'OIII', 'Hb'], GroupFLT=None,
-                      prior=None, zoom=True, verbose=True):
+    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={},
+                             force_line=['Ha', 'OIII', 'Hb'], mask_sn_limit=3, mask_lcontam_ratio=0.,
+                             GroupFLT=None, prior=None, zoom=True, verbose=True):
         """TBD
         
         size=20, pixscale=0.1,
@@ -2259,8 +2259,8 @@ class MultiBeam():
                                           get_beams=None, in_place=True)
         
         ## 2D lines to drizzle
-        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, 
-                                     save_fits=True)
+        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, save_fits=True,
+                                          mask_sn_limit=mask_sn_limit, mask_lcontam_ratio=mask_lcontam_ratio)
         
         # ra, dec = self.beams[0].get_sky_coords()
         # 
@@ -2314,12 +2314,9 @@ class MultiBeam():
         fit['id'] = self.id
         fit['fit_bg'] = self.fit_bg
         fit['grism_files'] = [b.grism.parent_file for b in self.beams]
-        # for item in ['A','coeffs','model_full','model_cont']:
-        #     if item in fit:
-        #         p = fit.pop(item)
-        #<<170303>> commented by Xin
-            
-        #p = fit.pop('coeffs')
+        for item in ['A','coeffs','model_full','model_cont']:
+            if item in fit:
+                p = fit.pop(item)
         
         np.save('{0}_{1:05d}.zfit.npy'.format(self.group_name, self.id), [fit])
             
