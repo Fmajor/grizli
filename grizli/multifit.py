@@ -2758,7 +2758,10 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
 
         if ds9 is not None:
             ds9.view(outsci/output_wcs.pscale**2, header=out_header)
-    
+
+        # print(' NOW at drizzle_2d_spectrum, i={}'.format(i))
+        # import pdb; pdb.set_trace()
+
     ### Correct for drizzle scaling
     outsci /= output_wcs.pscale**2
     
@@ -2863,6 +2866,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     outwht = np.zeros(sh, dtype=np.float32)
     outctx = np.zeros(sh, dtype=np.int32)
 
+    ##### For variance <<170501>> added by Xin
+    outvar = np.zeros(sh, dtype=np.float32)
+    outwv  = np.zeros(sh, dtype=np.float32)
+    outcv  = np.zeros(sh, dtype=np.int32)
+
     coutsci = np.zeros(sh, dtype=np.float32)
     coutwht = np.zeros(sh, dtype=np.float32)
     coutctx = np.zeros(sh, dtype=np.int32)
@@ -2898,9 +2906,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             contam_weight = np.exp(-(fcontam*np.abs(beam.contam)*np.sqrt(beam.ivar)))
             wht = beam.ivar*contam_weight
             wht[~np.isfinite(wht)] = 0.
+            contam_weight[~np.isfinite(contam_weight)] = 0     #<<170501>> added by Xin
             
         else:
             wht = beam.ivar*1
+            contam_weight = np.ones(beam.beam.sh_beam)  #<<170501>> added by Xin
         
         ### Convert to f_lambda integrated line fluxes: 
         ###     (Inverse of the aXe sensitivity) x (size of pixel in \AA)
@@ -2926,7 +2936,14 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
                          wcslin_pscale=beam.grism.wcs.pscale, uniqid=1, 
                          pixfrac=pixfrac, kernel=kernel, fillval=0, 
                          stepsize=10, wcsmap=None)
-        
+
+        #### For variance <<170501>> added by Xin
+        adrizzle.do_driz(contam_weight, beam_wcs, wht, output_wcs,
+                         outvar, outwv, outcv, 1., 'cps', 1,
+                         wcslin_pscale=beam.grism.wcs.pscale, uniqid=1,
+                         pixfrac=pixfrac, kernel=kernel, fillval=0,
+                         stepsize=10, wcsmap=None)
+
         ### Continuum
         adrizzle.do_driz(beam_continuum, beam_wcs, wht, output_wcs, 
                          coutsci, coutwht, coutctx, 1., 'cps', 1, 
@@ -2964,7 +2981,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
         ## Show in ds9
         if ds9 is not None:
             ds9.view((outsci-coutsci), header=header)
-    
+
+        # print(' NOW at drizzle_to_wavelength, i={}'.format(i))
+        # import pdb; pdb.set_trace()
+
     ## Scaling of drizzled outputs     
     #print 'Pscale: ', output_wcs.pscale    
     #outsci /= (output_wcs.pscale)**2
@@ -2975,7 +2995,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     coutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     xoutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     doutwht *= (beams[0].direct.wcs.pscale/output_wcs.pscale)**4
-    
+
+    #### For variance <<170501>> added by Xin
+    outwht /= outvar
+    outwht[(outvar == 0) | (~np.isfinite(outwht))] = 0
+
     ### Make output FITS products
     p = pyfits.PrimaryHDU()
     p.header['ID'] = (beams[0].id, 'Object ID')
