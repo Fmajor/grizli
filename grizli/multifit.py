@@ -2996,9 +2996,9 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     xoutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     doutwht *= (beams[0].direct.wcs.pscale/output_wcs.pscale)**4
 
-    #### For variance <<170501>> added by Xin
-    outwht /= outvar
-    outwht[(outvar == 0) | (~np.isfinite(outwht))] = 0
+    # #### For variance <<170501>> added by Xin
+    # outwht /= outvar
+    # outwht[(outvar == 0) | (~np.isfinite(outwht))] = 0
 
     ### Make output FITS products
     p = pyfits.PrimaryHDU()
