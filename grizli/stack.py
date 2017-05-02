@@ -461,9 +461,22 @@ class StackFitter(object):
         A = np.zeros((self.Next+NTEMP, self.Ndata))
         A[:self.Next,:] += self.Abg
         
+                
         for i, t in enumerate(templates):
             ti = templates[t]
-            s = [ti.wave*(1+z), ti.flux/(1+z)]
+            try:
+                import eazy.igm
+                if z > 7:
+                    igm = eazy.igm.Inoue14()
+                    igmz = igm.full_IGM(z, ti.wave*(1+z))         
+                else:
+                    igmz = 1.
+                    
+            except:
+                igmz = 1.
+
+            
+            s = [ti.wave*(1+z), ti.flux/(1+z)*igmz]
             
             for j, E in enumerate(self.E):
                 clip = E.ivar.sum(axis=0) > 0                    
@@ -708,7 +721,7 @@ class StackFitter(object):
                 t.meta['LINE{0:03d}W'.format(il)] = (EW, 
                             '{0} line rest EQW'.format(te[5:]))
                 
-        tfile = self.file.replace('.fits', '.zfit.full.fits')
+        tfile = self.file.replace('.fits', '.zfit.fits')
         if os.path.exists(tfile):
             os.remove(tfile)
 
@@ -936,7 +949,7 @@ class StackFitter(object):
             axc.plot(w[clip], flm[clip], color='r', alpha=0.6*f_alpha, linewidth=2) 
               
             # Plot limits              
-            ymax = np.maximum(ymax, (flm+er*0.)[clip].max())
+            ymax = np.maximum(ymax, (flm+np.median(er))[clip].max())
             ymin = np.minimum(ymin, (flm-er*0.)[clip].min())
             
             wmax = np.maximum(wmax, w.max())
