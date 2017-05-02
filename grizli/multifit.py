@@ -2831,14 +2831,14 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     
     ### Preserve flux (has to preserve aperture flux along spatial axis but
     ### average in spectral axis).
-    area_ratio *= spatial_scale
+    # area_ratio *= spatial_scale   #<<170502>>Xin: correction different for science and variance, see below
     
     # science
-    outsci *= area_ratio
+    outsci *= area_ratio*spatial_scale
     
     # variance
-    outvar *= area_ratio/outwv
-    outwht = 1/outvar
+    outvar *= area_ratio*spatial_scale**2.
+    outwht /= outvar
     outwht[(outvar == 0) | (~np.isfinite(outwht))] = 0
     
     # if True:
@@ -2988,11 +2988,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             contam_weight = np.exp(-(fcontam*np.abs(beam.contam)*np.sqrt(beam.ivar)))
             wht = beam.ivar*contam_weight
             wht[~np.isfinite(wht)] = 0.
-            contam_weight[~np.isfinite(contam_weight)] = 0     #<<170501>> added by Xin
+            # contam_weight[~np.isfinite(contam_weight)] = 0     #<<170501>> added by Xin
             
         else:
             wht = beam.ivar*1
-            contam_weight = np.ones(beam.beam.sh_beam)  #<<170501>> added by Xin
+            # contam_weight = np.ones(beam.beam.sh_beam)  #<<170501>> added by Xin
         
         ### Convert to f_lambda integrated line fluxes: 
         ###     (Inverse of the aXe sensitivity) x (size of pixel in \AA)
@@ -3019,12 +3019,12 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
                          pixfrac=pixfrac, kernel=kernel, fillval=0, 
                          stepsize=10, wcsmap=None)
         
-        #### For variance <<170501>> added by Xin
-        adrizzle.do_driz(contam_weight, beam_wcs, wht, output_wcs,
-                         outvar, outwv, outcv, 1., 'cps', 1,
-                         wcslin_pscale=beam.grism.wcs.pscale, uniqid=1,
-                         pixfrac=pixfrac, kernel=kernel, fillval=0,
-                         stepsize=10, wcsmap=None)
+        # #### For variance <<170501>> added by Xin
+        # adrizzle.do_driz(contam_weight, beam_wcs, wht, output_wcs,
+        #                  outvar, outwv, outcv, 1., 'cps', 1,
+        #                  wcslin_pscale=beam.grism.wcs.pscale, uniqid=1,
+        #                  pixfrac=pixfrac, kernel=kernel, fillval=0,
+        #                  stepsize=10, wcsmap=None)
 
         ### Continuum
         adrizzle.do_driz(beam_continuum, beam_wcs, wht, output_wcs, 
