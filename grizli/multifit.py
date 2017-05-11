@@ -2232,9 +2232,8 @@ class MultiBeam():
         
         return hdu_full
         
-    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, 
-                      force_line=['Ha', 'OIII', 'Hb', 'OII'], GroupFLT=None,
-                      prior=None, zoom=True, verbose=True):
+    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, GroupFLT=None, prior=None, zoom=True, verbose=True,
+                             force_line=['Ha', 'OIII', 'Hb', 'OII'], mask_sn_limit=3, mask_lcontam_ratio=3.):
         """TBD
         
         size=20, pixscale=0.1,
