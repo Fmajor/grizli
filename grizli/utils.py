@@ -1282,36 +1282,56 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
         
         # np.save('stars_bpgs.npy', [temp_list])
         
-        temp_list = np.load(os.path.join(os.getenv('GRIZLI'), 
-                                         'templates/stars.npy'))[0]
-        return temp_list
         
-    ## Intermediate and very old
-    # templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',  
-    #              'templates/cvd12_t11_solar_Chabrier.extend.skip10.dat']     
-    templates = ['eazy_intermediate.dat', 
-                 'cvd12_t11_solar_Chabrier.dat']
+        # tall = np.load(os.path.join(os.getenv('GRIZLI'), 
+        #                                  'templates/stars.npy'))[0]
+        # 
+        # return tall
+        # 
+        # temp_list = OrderedDict()
+        # for k in tall:
+        #     if k.startswith('uk'):
+        #         temp_list[k] = tall[k]
+        # 
+        # return temp_list
+        # 
+        # for t in 'MLT':
+        #     for k in tall:
+        #         if k.startswith('spex-prism-'+t):
+        #             temp_list[k] = tall[k]
+        #             
+        # return temp_list
+        
+        #return temp_list
+        templates = ['M6.5.txt', 'M8.0.txt', 'L1.0.txt', 'L3.5.txt', 'L6.0.txt', 'T2.0.txt', 'T6.0.txt', 'T7.5.txt']
+        templates = ['stars/'+t for t in templates]
+    else:
+        ## Intermediate and very old
+        # templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',  
+        #              'templates/cvd12_t11_solar_Chabrier.extend.skip10.dat']     
+        templates = ['eazy_intermediate.dat', 
+                     'cvd12_t11_solar_Chabrier.dat']
                  
-    ## Post starburst
-    #templates.append('templates/UltraVISTA/eazy_v1.1_sed9.dat')
-    templates.append('post_starburst.dat')
+        ## Post starburst
+        #templates.append('templates/UltraVISTA/eazy_v1.1_sed9.dat')
+        templates.append('post_starburst.dat')
     
-    ## Very blue continuum
-    #templates.append('templates/YoungSB/erb2010_continuum.dat')
-    templates.append('erb2010_continuum.dat')
+        ## Very blue continuum
+        #templates.append('templates/YoungSB/erb2010_continuum.dat')
+        templates.append('erb2010_continuum.dat')
     
-    ### Test new templates
-    # templates = ['templates/erb2010_continuum.dat',
-    # 'templates/fsps/tweak_fsps_temp_kc13_12_006.dat',
-    # 'templates/fsps/tweak_fsps_temp_kc13_12_008.dat']
+        ### Test new templates
+        # templates = ['templates/erb2010_continuum.dat',
+        # 'templates/fsps/tweak_fsps_temp_kc13_12_006.dat',
+        # 'templates/fsps/tweak_fsps_temp_kc13_12_008.dat']
     
-    if fsps_templates:
-        #templates = ['templates/fsps/tweak_fsps_temp_kc13_12_0{0:02d}.dat'.format(i+1) for i in range(12)]
-        templates = ['fsps/fsps_QSF_12_v3_nolines_0{0:02d}.dat'.format(i+1) for i in range(12)]
-        #templates = ['fsps/fsps_QSF_7_v3_nolines_0{0:02d}.dat'.format(i+1) for i in range(7)]
+        if fsps_templates:
+            #templates = ['templates/fsps/tweak_fsps_temp_kc13_12_0{0:02d}.dat'.format(i+1) for i in range(12)]
+            templates = ['fsps/fsps_QSF_12_v3_nolines_0{0:02d}.dat'.format(i+1) for i in range(12)]
+            #templates = ['fsps/fsps_QSF_7_v3_nolines_0{0:02d}.dat'.format(i+1) for i in range(7)]
     
-    if continuum_list is not None:
-        templates = continuum_list
+        if continuum_list is not None:
+            templates = continuum_list
         
     temp_list = OrderedDict()
     for temp in templates:
@@ -1323,6 +1343,9 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
                                            name=name)
         
         temp_list[name].name = name
+    
+    if stars:
+        return temp_list
         
     ### Emission lines:
     line_wavelengths, line_ratios = get_line_wavelengths()
@@ -1421,30 +1444,6 @@ def log_zgrid(zr=[0.7,3.4], dz=0.01):
     """
     zgrid = np.exp(np.arange(np.log(1+zr[0]), np.log(1+zr[1]), dz))-1
     return zgrid
-
-### Deprecated
-# def zoom_zgrid(zgrid, chi2nu, threshold=0.01, factor=10, grow=7):
-#     """TBD
-#     """
-#     import scipy.ndimage as nd
-#     
-#     mask = (chi2nu-chi2nu.min()) < threshold
-#     if grow > 1:
-#         mask_grow = nd.maximum_filter(mask*1, size=grow)
-#         mask = mask_grow > 0
-#         
-#     if mask.sum() == 0:
-#         return []
-#     
-#     idx = np.arange(zgrid.shape[0])
-#     out_grid = []
-#     for i in idx[mask]:
-#         if i == idx[-1]:
-#             continue
-#             
-#         out_grid = np.append(out_grid, np.linspace(zgrid[i], zgrid[i+1], factor+2)[1:-1])
-#     
-#     return out_grid
 
 def get_wcs_pscale(wcs):
     """Get correct pscale from a `~astropy.wcs.WCS` object
@@ -1634,9 +1633,7 @@ def full_spectrum_wcsheader(center_wave=1.4e4, dlam=40, NX=100, spatial_scale=1,
     refh['CTYPE2'] = 'DEC--TAN-SIP'
     refh['CUNIT2'] = 'mas'
     
-    ref_wcs = pywcs.WCS(refh)
-    #ref_wcs.pscale = np.sqrt(ref_wcs.wcs.cd[0,0]**2 + ref_wcs.wcs.cd[1,0]**2)*3600.
-    
+    ref_wcs = pywcs.WCS(refh)    
     ref_wcs.pscale = get_wcs_pscale(ref_wcs)
     
     return refh, ref_wcs
