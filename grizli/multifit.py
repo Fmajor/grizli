@@ -1382,7 +1382,7 @@ class MultiBeam(GroupFitter):
                 line_flux[key.split()[1]] = np.array([coeffs_full[i0+i]*fscl, 
                                              line_flux_err[i0+i]*fscl])
 
-        return line_flux, covar_full, cont1d, line1d, model1d, model_continuum
+        return line_flux, covar_full, cont1d, line1d, model1d, model_continuum, fscl
         
     def fit_stars(self, poly_order=1, fitter='nnls', fit_background=True, 
                   verbose=True, make_figure=True, zoom=None,
@@ -1665,8 +1665,8 @@ class MultiBeam(GroupFitter):
         
         # Parse results
         out2 = self.parse_fit_outputs(zbest, templates, coeffs_full, A)
-        line_flux, covar, cont1d, line1d, model1d, model_continuum = out2
-        
+        line_flux, covar, cont1d, line1d, model1d, model_continuum, fscl = out2
+
         # Output dictionary with fit parameters
         fit_data = OrderedDict()
         fit_data['poly_order'] = poly_order
@@ -1689,6 +1689,8 @@ class MultiBeam(GroupFitter):
         fit_data['model1d'] = model1d
         fit_data['cont1d'] = cont1d
         fit_data['line1d'] = line1d
+        fit_data['fscl'] = fscl     #<<170303>> added by Xin
+        fit_data['Ngrism'] = self.Ngrism    #<<170303>> added by Xin
         
         #return fit_data
         
@@ -1697,6 +1699,11 @@ class MultiBeam(GroupFitter):
             fig = self.show_redshift_fit(fit_data, figsize=figsize)
             #fig.savefig('fit.pdf')
             
+        # if 'ffull' not in fit_data.keys():
+        #     pdb.set_trace()
+        # else:
+        #     print(' -   >   fit_data has got the keys for 1D extraction!')
+
         return fit_data, fig
     
     def run_individual_fits(self, z=0, templates={}):
@@ -1775,7 +1782,7 @@ class MultiBeam(GroupFitter):
 
         return line_flux, line_err, coeffs_list, chi2_list, DoF_list
     
-    def show_redshift_fit(self, fit_data, plot_flambda=True, figsize=[8,5]):
+    def show_redshift_fit(self, fit_data, plot_flambda=True, figsize=[8,5], return_1Dextraction=True):
         """TBD
         """
         import matplotlib.gridspec
@@ -1911,6 +1918,13 @@ class MultiBeam(GroupFitter):
             else:
                 ax.scatter(beam.direct.ref_photplam/1.e4, beam.beam.total_flux/1.e-19, marker='s', edgecolor='k', color=GRISM_COLORS[grism], alpha=0.2, zorder=100, s=100)
                 
+        if return_1Dextraction:
+            print(' -   >   >   updating fit_data with 1D optimal extraction')
+            fit_data['wfull'] = wfull
+            fit_data['ffull'] = ffull
+            fit_data['efull'] = efull
+            fit_data['plot_flambda'] = plot_flambda
+
         for grism in grisms:                        
             if self.Ngrism[grism] > 1:
                 ## binned
@@ -1977,11 +1991,12 @@ class MultiBeam(GroupFitter):
         gs.tight_layout(fig, pad=0.1)
         return fig
     
-    def redshift_fit_twod_figure(self, fit, spatial_scale=1, dlam=46., NY=10,
-                                 figsize=[8,3.5], **kwargs):
+    def redshift_fit_twod_figure(self, fit, spatial_scale=1, dlam=46., NY=10, kernel='point', pixfrac=0.6, ds9=None,
+                                 figsize=[8,4.8], hw_show=25, **kwargs):
         """Make figure of 2D spectrum
         
         TBD
+        #<<170417>> Xin: added kws `kernel`, `pixfrac`, `ds9`. Also added the panel of 'rms' into the 2D.png plot.
         """        
         ### xlimits        
         xmin, xmax = 1.e5, 0
@@ -1991,24 +2006,24 @@ class MultiBeam(GroupFitter):
                 xmin = np.minimum(xmin, GRISM_LIMITS[g][0])
                 xmax = np.maximum(xmax, GRISM_LIMITS[g][1])
         
-        hdu_sci = drizzle_2d_spectrum(self.beams, ds9=None, NY=NY,
+        hdu_sci = drizzle_2d_spectrum(self.beams, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax], 
                                       fcontam=self.fcontam)
                                   
         ### Continuum model
         cont = self.reshape_flat(fit['model_cont'])        
-        hdu_con = drizzle_2d_spectrum(self.beams, data=cont, ds9=None, NY=NY,
+        hdu_con = drizzle_2d_spectrum(self.beams, data=cont, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax], 
                                       fcontam=self.fcontam)
         
         full = self.reshape_flat(fit['model_full'])        
-        hdu_full = drizzle_2d_spectrum(self.beams, data=full, ds9=None, NY=NY,
+        hdu_full = drizzle_2d_spectrum(self.beams, data=full, ds9=ds9, NY=NY,
                                       spatial_scale=spatial_scale, dlam=dlam, 
-                                      kernel='point', pixfrac=0.6,
+                                      kernel=kernel, pixfrac=pixfrac,
                                       wlimit=[xmin, xmax],
                                       fcontam=self.fcontam)
         
@@ -2023,25 +2038,35 @@ class MultiBeam(GroupFitter):
         extent = [hdu_full[0].header['WMIN'], hdu_full[0].header['WMAX'],
                   0, sh[0]]
                   
+        ### Plotting
         fig = plt.figure(figsize=figsize)
-        show = [hdu_sci[1].data, hdu_full[1].data,
-                hdu_sci[1].data-hdu_con[1].data]
         
-        desc = [r'$Contam$'+'\n'+r'$Cleaned$', r'$Model$', r'$Line$'+'\n'+r'$Residual$']
+        show = [hdu_sci[1].data, hdu_full[1].data, hdu_sci[1].data-hdu_con[1].data, np.ma.masked_equal(np.sqrt(1./hdu_sci[2].data), 0.)]
+        desc = [r'$Contam$'+'\n'+r'$Cleaned$', r'$Model$', r'$Line$'+'\n'+r'$Residual$', r'RMS']
         
+        #------------ get cut_ind
+        hw_old = NY; ctr_old = hw_old-0.5
+        cut_ind = np.arange(int(np.ceil(ctr_old-hw_show)),int(np.ceil(ctr_old+hw_show)))
+
         i=0
-        for data_i, desc_i in zip(show, desc):
+        for data_i, desc_i in zip(show[:-1], desc[:-1]):
             ax = fig.add_subplot(11+i+100*len(show))        
-            ax.imshow(data_i, origin='lower',
+            ax.imshow(data_i[cut_ind, :], origin='lower',
                       interpolation='Nearest', vmin=-0.1*vmax, vmax=vmax, 
                       extent=extent, cmap = plt.cm.viridis_r, 
                       aspect='auto')
-            
+            ax.set_yticks([])
             ax.set_yticklabels([])
             ax.set_ylabel(desc_i)
-            
             i+=1
             
+        ## Plotting the 'RMS' panel
+        ax = fig.add_subplot(11+i+100*len(show))
+        ax.imshow(show[i][cut_ind, :], origin='lower', interpolation='Nearest', vmin=0., vmax=0.02, extent=extent, cmap=plt.cm.jet, aspect='auto')
+        ax.set_yticks([])
+        ax.set_yticklabels([])
+        ax.set_ylabel(desc[i])
+
         for ax in fig.axes[:-1]:
             ax.set_xticklabels([])
             
@@ -2065,9 +2090,13 @@ class MultiBeam(GroupFitter):
         
         return fig, hdu_sci
     
-    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3):
+    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3,
+                          mask_lcontam_ratio=0.):
         """
         TBD
+        :param mask_lcontam_ratio: a number (>=0)                                                <<170414>> added by Xin
+                masking pixels where contam line flux / line of interest flux > `mask_lcontam_ratio`
+                `mask_lcontam_ratio`=0  =>  an extreme case of masking everything
         """
         line_wavelengths, line_ratios = utils.get_line_wavelengths()
         hdu_full = []
@@ -2175,7 +2204,8 @@ class MultiBeam(GroupFitter):
                                     #print beam.grism.parent_file, lkey
                                     continue
                                     
-                                beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                                # beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                                beam.ivar[lcontam > mask_lcontam_ratio*lmodel] *= 0    #<<170414>> added by Xin
 
                 hdu = drizzle_to_wavelength(self.beams, ra=self.ra, 
                                             dec=self.dec, wave=line_wave_obs,
@@ -2229,9 +2259,8 @@ class MultiBeam(GroupFitter):
         
         return hdu_full
         
-    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, 
-                      force_line=['Ha', 'OIII', 'Hb', 'OII'], GroupFLT=None,
-                      prior=None, zoom=True, verbose=True):
+    def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, GroupFLT=None, prior=None, zoom=True, verbose=True,
+                             force_line=['Ha', 'OIII', 'Hb', 'OII'], mask_sn_limit=3, mask_lcontam_ratio=3.):
         """TBD
         
         size=20, pixscale=0.1,
@@ -2313,6 +2342,9 @@ class MultiBeam(GroupFitter):
         spec_in = copy.copy(pspec2)
         spec_in['fit'] = fit
         spec_in['dlam'] = dlam
+        #<<170417>>XIN: pass 'kernel' and 'pixfrac' to `redshift_fit_twod_figure()`
+        spec_in['kernel'] = pline['kernel']
+        spec_in['pixfrac'] = pline['pixfrac']
         
         #fig2, hdu2 = self.redshift_fit_twod_figure(**spec_in)#, kwargs=spec2) #dlam=dlam, spatial_scale=spatial_scale, NY=NY)
         fig2 = hdu2 = None
@@ -2332,10 +2364,9 @@ class MultiBeam(GroupFitter):
                                           get_beams=None, in_place=True)
         
         ## 2D lines to drizzle
-        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, 
-                                          save_fits=True)
-        
-        
+        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, save_fits=True,
+                                          mask_sn_limit=mask_sn_limit, mask_lcontam_ratio=mask_lcontam_ratio)
+
         fit['id'] = self.id
         fit['fit_bg'] = self.fit_bg
         fit['grism_files'] = [b.grism.parent_file for b in self.beams]
@@ -2343,8 +2374,6 @@ class MultiBeam(GroupFitter):
             if item in fit:
                 p = fit.pop(item)
             
-        #p = fit.pop('coeffs')
-        
         np.save('{0}_{1:05d}.zfit.npy'.format(self.group_name, self.id), [fit])
             
         fig.savefig('{0}_{1:05d}.zfit.png'.format(self.group_name, self.id))
@@ -2754,7 +2783,7 @@ def get_redshift_fit_defaults():
                  prior=None, templates={}, figsize=[8,5],
                  fsps_templates=False)
     
-    pspec2_def = dict(dlam=0, spatial_scale=1, NY=20, figsize=[8,3.5])
+    pspec2_def = dict(dlam=0, spatial_scale=1, NY=20, figsize=[8,3.5], ds9=None)    #<<170417>> Xin
     pline_def = dict(size=20, pixscale=0.1, pixfrac=0.2, kernel='square', 
                      wcs=None)
 
@@ -2916,7 +2945,7 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     #area_ratio *= spatial_scale
     
     # preserve flux density
-    flux_density_scale = spatial_scale**2
+    flux_density_scale = spatial_scale**2   #<<170525>>Xin: different lies in this square!
     
     # science
     outsci *= area_ratio*flux_density_scale
@@ -3036,6 +3065,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     outwht = np.zeros(sh, dtype=np.float32)
     outctx = np.zeros(sh, dtype=np.int32)
 
+    ##### For variance <<170501>> added by Xin
+    outvar = np.zeros(sh, dtype=np.float32)
+    outwv  = np.zeros(sh, dtype=np.float32)
+    outcv  = np.zeros(sh, dtype=np.int32)
+
     coutsci = np.zeros(sh, dtype=np.float32)
     coutwht = np.zeros(sh, dtype=np.float32)
     coutctx = np.zeros(sh, dtype=np.int32)
@@ -3086,9 +3120,11 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             contam_weight = np.exp(-(fcontam*np.abs(beam.contam)*np.sqrt(beam.ivar)))
             wht = beam.ivar*contam_weight
             wht[~np.isfinite(wht)] = 0.
+            # contam_weight[~np.isfinite(contam_weight)] = 0     #<<170501>> added by Xin
             
         else:
             wht = beam.ivar*1
+            # contam_weight = np.ones(beam.beam.sh_beam)  #<<170501>> added by Xin
         
         ### Convert to f_lambda integrated line fluxes: 
         ###     (Inverse of the aXe sensitivity) x (size of pixel in \AA)
@@ -3116,6 +3152,13 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
                          pixfrac=pixfrac, kernel=kernel, fillval=0, 
                          stepsize=10, wcsmap=None)
         
+        # #### For variance <<170501>> added by Xin
+        # adrizzle.do_driz(contam_weight, beam_wcs, wht, output_wcs,
+        #                  outvar, outwv, outcv, 1., 'cps', 1,
+        #                  wcslin_pscale=beam.grism.wcs.pscale, uniqid=1,
+        #                  pixfrac=pixfrac, kernel=kernel, fillval=0,
+        #                  stepsize=10, wcsmap=None)
+
         ### Continuum
         adrizzle.do_driz(beam_continuum, beam_wcs, wht, output_wcs, 
                          coutsci, coutwht, coutctx, 1., 'cps', 1, 
@@ -3154,6 +3197,9 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
         if ds9 is not None:
             ds9.view((outsci-coutsci), header=header)
     
+        # print(' NOW at drizzle_to_wavelength, i={}'.format(i))
+        # import pdb; pdb.set_trace()
+
     ## Scaling of drizzled outputs     
     #print 'Pscale: ', output_wcs.pscale    
     #outsci /= (output_wcs.pscale)**2
@@ -3165,6 +3211,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     xoutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     doutwht *= (beams[0].direct.wcs.pscale/output_wcs.pscale)**4
     
+    # #### For variance <<170501>> added by Xin
+    # outwht /= outvar
+    # outwht[(outvar == 0) | (~np.isfinite(outwht))] = 0
+
     ### Make output FITS products
     p = pyfits.PrimaryHDU()
     p.header['ID'] = (beams[0].id, 'Object ID')
