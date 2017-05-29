@@ -2095,7 +2095,7 @@ class MultiBeam(GroupFitter):
         return fig, hdu_sci
     
     def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3,
-                          mask_lcontam_ratio=0.):
+                          mask_lcontam_ratio=3.):
         """
         TBD
         :param mask_lcontam_ratio: a number (>=0)                                                <<170414>> added by Xin
