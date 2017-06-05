@@ -2095,17 +2095,24 @@ class MultiBeam(GroupFitter):
         
         return fig, hdu_sci
     
-    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3,
-                          mask_lcontam_ratio=3.):
+    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True):
         """
         TBD
-        :param mask_lcontam_ratio: a number (>=0)                                                <<170414>> added by Xin
-                masking pixels where contam line flux / line of interest flux > `mask_lcontam_ratio`
-                `mask_lcontam_ratio`=0  =>  an extreme case of masking everything
+        """
+        line_wavelengths, line_ratios = utils.get_line_wavelengths()
+        """
+        TBD
+        :param mask_sn_limit: a number (>=0)                                                <<170604>> modified by Xin
+                masking pixels where contam line flux / line of interest flux > `mask_sn_limit`
+                `mask_sn_limit`=0  =>  an extreme case of masking everything
         """
         line_wavelengths, line_ratios = utils.get_line_wavelengths()
         hdu_full = []
         saved_lines = []
+        
+        if ('cfit' in fit) & mask_4959:
+            if 'line OIII' in fit['templates']:
+                t_o3 = utils.load_templates(fwhm=fit['templates']['line OIII'].fwhm, line_complexes=False, stars=False, full_line_list=['OIII4959'], continuum_list=[], fsps_templates=False)
         
         if 'zbest' in fit:
             z_driz = fit['zbest']
@@ -2137,7 +2144,7 @@ class MultiBeam(GroupFitter):
             if line_err == 0:
                 continue
 
-            if (line_flux/line_err > 7) | (line in force_line):
+            if (line_flux/line_err > 4) | (line in force_line):
                 print('Drizzle line -> {0:4s} ({1:.2f} {2:.2f})'.format(line, line_flux/1.e-17, line_err/1.e-17))
 
                 line_wave_obs = line_wavelengths[line][0]*(1+z_driz)
@@ -2176,6 +2183,8 @@ class MultiBeam(GroupFitter):
                             keys = fit['cfit']
                         else:
                             keys = fit['line1d']
+                        
+                        beam.extra_lines = beam.contam*0.
                                 
                         for lkey in keys:
                             if not lkey.startswith('line'):
@@ -2184,7 +2193,7 @@ class MultiBeam(GroupFitter):
                             key = lkey.replace('line ', '')
                             lf, le = line_flux_dict[key]
                             ### Don't mask if the line missing or undetected
-                            if (lf == 0) | (lf < mask_sn_limit*le):
+                            if (lf == 0):# | (lf < mask_sn_limit*le):
                                 continue
                                 
                             if key != line:
@@ -2208,10 +2217,33 @@ class MultiBeam(GroupFitter):
                                 if lcontam.max() == 0:
                                     #print beam.grism.parent_file, lkey
                                     continue
-                                    
-                                # beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
-                                beam.ivar[lcontam > mask_lcontam_ratio*lmodel] *= 0    #<<170414>> added by Xin
 
+                                beam.extra_lines += lcontam
+                                    
+                                beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                        
+                        # Subtract 4959
+                        if (line == 'OIII') & ('cfit' in fit) & mask_4959:
+                            lm = t_o3['line OIII4959']
+                            scl = fit['cfit']['line OIII'][0]/(1+z_driz)
+                            scl *= 1./(2.98+1)
+                            sp = [lm.wave*(1+z_driz), lm.flux*scl]
+                            
+                            if ((lm.wave.max() < lam.min()) | 
+                                (lm.wave.min() > lam.max())):
+                                continue
+
+                            m = beam.compute_model(spectrum_1d=sp, 
+                                                   in_place=False,
+                                                   is_cgs=True) 
+                                                   
+                            lcontam = m.reshape(beam.beam.sh_beam)
+                            if lcontam.max() == 0:
+                                continue
+
+                            #print('Mask 4959!')
+                            beam.extra_lines += lcontam
+                            
                 hdu = drizzle_to_wavelength(self.beams, ra=self.ra, 
                                             dec=self.dec, wave=line_wave_obs,
                                             fcontam=self.fcontam,
@@ -2256,6 +2288,7 @@ class MultiBeam(GroupFitter):
                                         fcontam=self.fcontam,
                                         **pline)
             hdu_full = hdu[:3]
+            hdu_full[0].header['REDSHIFT'] = (z_driz, 'Redshift used')
             hdu_full[0].header['NUMLINES'] = 0
             hdu_full[0].header['HASLINES'] = ' '
                                         
@@ -2265,7 +2298,7 @@ class MultiBeam(GroupFitter):
         return hdu_full
         
     def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, GroupFLT=None, prior=None, zoom=True, verbose=True,
-                             force_line=['Ha', 'OIII', 'Hb', 'OII'], mask_sn_limit=3, mask_lcontam_ratio=3.):
+                             force_line=['Ha', 'OIII', 'Hb', 'OII'], mask_sn_limit=3):
         """TBD
         
         size=20, pixscale=0.1,
@@ -2369,8 +2402,7 @@ class MultiBeam(GroupFitter):
                                           get_beams=None, in_place=True)
         
         ## 2D lines to drizzle
-        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, save_fits=True,
-                                          mask_sn_limit=mask_sn_limit, mask_lcontam_ratio=mask_lcontam_ratio)
+        hdu_full = self.drizzle_fit_lines(fit, pline, force_line=force_line, save_fits=True, mask_sn_limit=mask_sn_limit)
 
         fit['id'] = self.id
         fit['fit_bg'] = self.fit_bg
@@ -3113,7 +3145,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
         beam_data = beam.grism.data['SCI'] - beam.contam 
         if hasattr(beam, 'background'):
             beam_data -= beam.background
-            
+        
+        if hasattr(beam, 'extra_lines'):
+            beam_data -= beam.extra_lines    
+        
         beam_continuum = beam.beam.model*1
         
         # Downweight contamination
