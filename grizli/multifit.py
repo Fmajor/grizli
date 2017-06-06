@@ -931,7 +931,7 @@ class MultiBeam(GroupFitter):
         self.id = self.beams[0].id
         
         # Use WFC3 ePSF for the fit
-        if psf & (self.beams[i].grism.instrument == 'WFC3'):
+        if (psf > 0) & (self.beams[i].grism.instrument == 'WFC3'):
             # Crude for now:  overwrite `beam.compute_model` methods with 
             # the `compute_model_psf`
             for ib, beam in enumerate(self.beams):
@@ -943,7 +943,7 @@ class MultiBeam(GroupFitter):
                     beam.direct.filter = beam.direct.ref_filter #'F160W'
                     beam.direct.photflam = beam.direct.ref_photflam
                 
-                beam.init_epsf(yoff = 0.06)
+                beam.init_epsf(yoff = 0.06, skip=psf*1)
                 beam.compute_model = beam.compute_model_psf
                 beam.beam.compute_model = beam.compute_model_psf
                 beam.compute_model()
@@ -1062,12 +1062,18 @@ class MultiBeam(GroupFitter):
         i0 = 1
         self.beams = []
         for i in range(N):
-            beam = model.BeamCutout(fits_file=hdu[i0:i0+6])#Next[i]])
+            key = 'NEXT{0:04d}'.format(i)
+            if key in hdu[0].header:
+                Next_i = hdu[0].header[key]
+            else:
+                Next_i = 6 # Assume doesn't have direct SCI/ERR cutouts
+                
+            beam = model.BeamCutout(fits_file=hdu[i0:i0+Next_i])#Next[i]])
             self.beams.append(beam)
             if verbose:
                 print('{0} {1} {2}'.format(i+1, beam.grism.parent_file, beam.grism.filter))
                 
-            i0 += 6#Next[i]
+            i0 += Next_i #6#Next[i]
             
     def write_beam_fits(self, verbose=True):
         """TBD
@@ -3011,6 +3017,7 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     p.header['FCONTAM'] = (fcontam, 'Contamination weight')
     p.header['PIXFRAC'] = (pixfrac, 'Drizzle PIXFRAC')
     p.header['DRIZKRNL'] = (kernel, 'Drizzle kernel')
+    p.header['BEAM'] = (beams[0].beam.beam, 'Grism order')
     
     p.header['NINPUT'] = (len(beams), 'Number of drizzled beams')
     for i, beam in enumerate(beams):
