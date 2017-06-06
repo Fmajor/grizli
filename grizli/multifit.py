@@ -2098,10 +2098,6 @@ class MultiBeam(GroupFitter):
     def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True):
         """
         TBD
-        """
-        line_wavelengths, line_ratios = utils.get_line_wavelengths()
-        """
-        TBD
         :param mask_sn_limit: a number (>=0)                                                <<170604>> modified by Xin
                 masking pixels where contam line flux / line of interest flux > `mask_sn_limit`
                 `mask_sn_limit`=0  =>  an extreme case of masking everything
