@@ -26,14 +26,19 @@ try:
 except:
     IGM = None
 
-def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter='nnls', group_name='grism', fit_stacks=True, prior=None, fcontam=0.2, pline=PLINE, mask_sn_limit=3, fit_beams=True, root='', fit_trace_shift=False, phot=None, verbose=True, scale_photometry=False):
+def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter='nnls', group_name='grism',
+            fit_stacks=True, prior=None, fcontam=0.2, pline=PLINE, mask_sn_limit=3, fit_beams=True, root='',
+            fit_trace_shift=False, phot=None, verbose=True, scale_photometry=False,
+            force_line=['SIII','SII','Ha', 'OIII', 'Hb', 'OII']):
     """Run the full procedure
     
     1) Load MultiBeam and stack files 
     2) 
     
     fwhm=1200; zr=[0.65, 1.6]; dz=[0.004, 0.0002]; group_name='grism'; fit_stacks=True; prior=None; fcontam=0.2; mask_sn_limit=3; fit_beams=True; root=''
-    
+
+    :param force_line: a list of force-extracted ELs        <<170711>> modified by Xin
+            passed to `~.multifit.MultiBeam.drizzle_fit_lines()`
     """
     import glob
     import grizli.multifit
@@ -217,13 +222,16 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     if pline is None:
          pzfit, pspec2, pline = grizli.multifit.get_redshift_fit_defaults()
     
-    line_hdu = mb.drizzle_fit_lines(tfit, pline, force_line=['SIII','SII','Ha', 'OIII', 'Hb', 'OII'], save_fits=False, mask_lines=True, mask_sn_limit=mask_sn_limit)
+    line_hdu = mb.drizzle_fit_lines(tfit, pline, force_line=force_line, save_fits=False, mask_lines=True, mask_sn_limit=mask_sn_limit)
     
     # Add beam exposure times
     exptime = mb.compute_exptime()
     for k in exptime:
         line_hdu[0].header['T_{0}'.format(k)] = (exptime[k], 'Total exposure time [s]')
-         
+
+    # Add tfit['z']         <<170712>> added by Xin
+    line_hdu[0].header['z'] = (tfit['z'], 'Bestfit redshift')   # should be the same as line_hdu['ZFIT_BEAM'].header['Z_MAP']
+
     line_hdu.insert(1, fit_hdu)
     line_hdu.insert(2, cov_hdu)
     if fit_beams:

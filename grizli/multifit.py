@@ -2312,7 +2312,7 @@ class MultiBeam(GroupFitter):
                             if lcontam.max() == 0:
                                 continue
 
-                            #print('Mask 4959!')
+                            print('Mask 4959!')         # uncommented by Xin <<170711>>
                             beam.extra_lines += lcontam
                             
                 hdu = drizzle_to_wavelength(self.beams, ra=self.ra, 
