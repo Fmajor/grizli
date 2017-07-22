@@ -51,6 +51,7 @@ grism_limits = {'G800L':[0.545, 1.02, 50.], # ACS/WFC
            'CLEARP':[0.76, 2.3,45.0]}
 
 default_line_list = ['SIII', 'SII', 'Ha', 'OI-6302', 'OIII', 'Hb', 'OIII-4363', 'Hg', 'Hd', 'NeIII', 'OII', 'MgII','Lya']
+default_line_list.pop(default_line_list.index('OIII-4363'))    #<<170722>> Xin dropped the auroral OIII line b/c fully blended
 
 def test():
     
@@ -1286,7 +1287,7 @@ class MultiBeam():
                 cont1d += temp_i
             else:
                 line1d[key.split()[1]] = temp_i
-                line_flux[key.split()[1]] = np.array([coeffs_full[i0+i]*fscl, 
+                line_flux[key.split()[1]] = np.array([coeffs_full[i0+i]*fscl,
                                              line_flux_err[i0+i]*fscl])
 
         return line_flux, cont1d, line1d, model1d, model_continuum, fscl
@@ -1321,14 +1322,8 @@ class MultiBeam():
             Get stellar templates rather than galaxies + lines
             
         full_line_list : None or list
-            Full set of lines to try.  The default is currently
-            
-                >>> full_line_list = ['SIII', 'SII', 'Ha', 'OI-6302', 
-                                      'OIII', 'Hb', 'OIII-4363', 
-                                      'Hg', 'Hd', 'NeIII', 'OII', 'MgII']
-                NOTE: len(full_line_list) = 12
-            
-            The full list of implemented lines is in `~grizli.utils.get_line_wavelengths`.
+            Full set of lines to try.  The default is set to be `default_line_list` defined above.
+            The wavelength of implemented lines is in `~grizli.utils.get_line_wavelengths`.
         
         Returns
         -------
