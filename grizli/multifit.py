@@ -2291,7 +2291,8 @@ class MultiBeam():
                 
         ### Redshift fit
         zfit_in = copy.copy(pzfit)
-        zfit_in['fwhm'] = fwhm
+        #<<171017>>XIN: change wave resolution in 1D spectra according to pspec2['spatial_scale']
+        zfit_in['fwhm'] = fwhm * pspec2['spatial_scale']
         zfit_in['prior'] = prior
         zfit_in['zoom'] = zoom
         zfit_in['verbose'] = verbose
