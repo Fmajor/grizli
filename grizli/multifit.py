@@ -1247,6 +1247,7 @@ class MultiBeam():
         Ax *= np.sqrt(self.ivarf[self.fit_mask][:, np.newaxis])
         try:
             covar = np.matrix(np.dot(Ax.T, Ax)).I
+            covar = np.asarray(covar)       # added by Xin <<180722>>
             covard = np.sqrt(covar.diagonal())
         except:
             covard = np.zeros(ok_temp.sum())#-1.
@@ -1989,7 +1990,7 @@ class MultiBeam():
                 ax.errorbar(wbin/1.e4, fbin, np.sqrt(vbin), alpha=0.8,
                             linestyle='None', marker='.', 
                             color=grism_colors[grism], zorder=2)
-                
+
                 med_err = np.median(np.sqrt(vbin))
                 ymin = np.minimum(ymin, (fbin-2*med_err).min())
                 ymax = np.maximum(ymax, (fbin+2*med_err).max())
@@ -2292,7 +2293,8 @@ class MultiBeam():
         ### Redshift fit
         zfit_in = copy.copy(pzfit)
         #<<171017>>XIN: change wave resolution in 1D spectra according to pspec2['spatial_scale']
-        zfit_in['fwhm'] = fwhm * pspec2['spatial_scale']
+        # zfit_in['fwhm'] = fwhm * pspec2['spatial_scale']      <<171018>>does not work.
+        zfit_in['fwhm'] = fwhm
         zfit_in['prior'] = prior
         zfit_in['zoom'] = zoom
         zfit_in['verbose'] = verbose
