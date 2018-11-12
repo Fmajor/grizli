@@ -344,7 +344,10 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     exptime = mb.compute_exptime()
     for k in exptime:
         line_hdu[0].header['T_{0}'.format(k)] = (exptime[k], 'Total exposure time [s]')
-         
+
+    # Add tfit['z']         <<170712>> added by Xin
+    line_hdu[0].header['z'] = (tfit['z'], 'Bestfit redshift')   # should be the same as line_hdu['ZFIT_BEAM'].header['Z_MAP']
+
     line_hdu.insert(1, fit_hdu)
     line_hdu.insert(2, cov_hdu)
     if fit_beams:

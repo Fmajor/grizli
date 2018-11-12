@@ -288,7 +288,7 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1):
     
         
 def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
-                    get_footprint = False, 
+                    get_footprint = False, output_info_name = None,
                     translate = {'AEGIS-':'aegis-', 
                                  'COSMOS-':'cosmos-', 
                                  'GNGRISM':'goodsn-', 
@@ -366,7 +366,10 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
         Nested dictionary split by filter and then PA_V3.  This shouldn't  
         be used if exposures from completely disjoint pointings are stored
         in the same working directory.
-    """    
+
+    --- Additional Note ---
+    *<<170411>> Xin added code to output info as ascii table.
+    """
     
     if info is None:
         if not files:
@@ -418,7 +421,11 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
     
     output_list = [] #OrderedDict()
     filter_list = OrderedDict()
-    
+
+    #<<170411>> added by Xin
+    product_list = ['temp']*len(info)
+    visits_sequence = []
+
     for filter in np.unique(info['filter']):
         filter_list[filter] = OrderedDict()
         
@@ -481,7 +488,12 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
 
                     for tstart, file in zip(info['expstart'][use],
                                             info['file'][use]):
-                                            
+                        #<<170411>> added by Xin
+                        ind = np.where(info['file'] == file)[0]
+                        assert (len(ind)==1), ' ERR: multiple entries found!'
+                        product_list[ind[0]] = visit_product.lower()
+                        visits_sequence.append(ind[0])
+
                         f = file.split('.gz')[0]
                         if f not in exposure_list:
                             visit_list.append(str(f))
@@ -510,7 +522,18 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                     d = OrderedDict(product=str(product.lower()),
                                     files=list(np.array(exposure_list)[so]))
                     output_list.append(d)
-    
+
+    ### output info as an ascii table <<170411>> added by Xin
+    if output_info_name:
+        info['product'] = product_list
+        info = info[np.asarray(visits_sequence)]
+        assert isinstance(output_info_name, np.str), ' ERR: keyword type incorrect'
+        info_out = info['product', 'file', 'filter', 'date-obs', 'time-obs', 'expstart', 'exptime', 'pa_v3', 'progIDs']
+        try:
+            ascii.write(info_out, output_info_name, delimiter=' ', overwrite=True)
+        except:
+            ascii.write(info_out, output_info_name, delimiter=' ')
+
     ### Split large shifts
     if visit_split_shift > 0:
         split_list = []
