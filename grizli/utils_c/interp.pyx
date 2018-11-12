@@ -5,9 +5,35 @@ import numpy as np
 cimport numpy as np
 DTYPE = np.double
 ctypedef np.double_t DTYPE_t
+ctypedef np.int_t ITYPE_t
 ctypedef np.uint_t UINT_t
 
 import cython
+
+cdef extern from "math.h":
+    double fabs(double)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.cdivision(True)
+@cython.embedsignature(True)
+def pixel_map_c(np.ndarray[DTYPE_t, ndim=2] in_data, np.ndarray[ITYPE_t, ndim=1] xi, np.ndarray[ITYPE_t, ndim=1] yi, np.ndarray[DTYPE_t, ndim=2] out_data, np.ndarray[ITYPE_t, ndim=1] xo, np.ndarray[ITYPE_t, ndim=1] yo):
+    """
+    pixel_map_c(in_data, xi, yi, out_data, xo, yo)
+    
+    Fast pixel mapping from one image to another:
+        
+        in_data[yi, xi] -> out_data[yo, xo]
+        
+    
+    """
+    cdef unsigned long i, N
+
+    N = len(xi)
+    for i in range(N):
+        out_data[yo[i], xo[i]] = in_data[yi[i], xi[i]]
+        
+    return True
     
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -179,9 +205,9 @@ def new_interp_conserve_c(np.ndarray[DTYPE_t, ndim=1] x, np.ndarray[DTYPE_t, ndi
     
     
 @cython.boundscheck(False)
-def interp_conserve_c(np.ndarray[DTYPE_t, ndim=1] x, np.ndarray[DTYPE_t, ndim=1] tlam, np.ndarray[DTYPE_t, ndim=1] tf, double left=0, double right=0):
+def interp_conserve_c(np.ndarray[DTYPE_t, ndim=1] x, np.ndarray[DTYPE_t, ndim=1] tlam, np.ndarray[DTYPE_t, ndim=1] tf, double left=0, double right=0, double integrate=0):
     """
-    interp_conserve_c(x, xp, fp, left=0, right=0)
+    interp_conserve_c(x, xp, fp, left=0, right=0, integrate=0)
     
     Interpolate `xp`,`yp` array to the output x array, conserving flux.  
     `xp` can be irregularly spaced.
@@ -249,8 +275,10 @@ def interp_conserve_c(np.ndarray[DTYPE_t, ndim=1] x, np.ndarray[DTYPE_t, ndim=1]
                 h = templmid[k+1]-tlam[i];
                 numsum+=h*(tempfmid[k+1]+tf[i]);
 
-        outy[k] = numsum*0.5/(templmid[k+1]-templmid[k]);
-    
+        outy[k] = numsum*0.5;#/(templmid[k+1]-templmid[k]);
+        if integrate == 0.:
+            outy[k] /= (templmid[k+1]-templmid[k]);
+            
     return outy
     
 def midpoint(x):
@@ -275,7 +303,10 @@ def midpoint_c(np.ndarray[DTYPE_t, ndim=1] x, long N):
         xi = x[i]
         midpoint[i] = 0.5*xi+0.5*xi1
         xi1 = xi
-        
+    
+    midpoint[0] = 2*x[0]-midpoint[1]
+    midpoint[N] = 2*x[N-1]-midpoint[N-1]
+    
     return midpoint
     
 @cython.boundscheck(False)
@@ -341,9 +372,6 @@ def run_nmf(np.ndarray[DTYPE_t, ndim=1] flux, np.ndarray[DTYPE_t, ndim=1] varian
     cdef double vold,av
     cdef np.ndarray[DTYPE_t, ndim=1] bvector
     
-    cdef extern from "math.h":
-        double fabs(double)
-
     NTEMP, NFILT = np.shape(templates)
             
     #### Make Bvector
@@ -407,9 +435,6 @@ def interpolate_tempfilt(np.ndarray[DTYPE_t, ndim=3] tempfilt, np.ndarray[DTYPE_
     """
     cdef unsigned long NT, NF, NZ, itemp, ifilt, iz
     cdef double dz, fint, fint2
-    
-    cdef extern from "math.h":
-        double fabs(double)
     
     NF, NT, NZ = np.shape(tempfilt)
     
