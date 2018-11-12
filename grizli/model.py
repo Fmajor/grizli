@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import astropy.io.fits as pyfits
 from astropy.table import Table
 import astropy.wcs as pywcs
+import astropy.units as u
 
 #import stwcs
 
@@ -20,6 +21,10 @@ from . import grismconf
 from . import utils
 from .utils_c import disperse
 from .utils_c import interp
+from . import GRIZLI_PATH
+
+# Would prefer 'nearest' but that occasionally segment faults out
+SEGMENTATION_INTERP = 'nearest' 
 
 ### Factors for converting HST countrates to Flamba flux densities
 photflam_list = {'F098M': 6.0501324882418389e-20, 
@@ -54,7 +59,7 @@ photplam_list = {'F098M': 9864.722728110915,
             'G280': 3651.}
 
 # character to skip clearing line on STDOUT printing
-no_newline = '\x1b[1A\x1b[1M' 
+#no_newline = '\x1b[1A\x1b[1M' 
 
 ### Demo for computing photflam and photplam with pysynphot
 if False:
@@ -80,7 +85,7 @@ class GrismDisperser(object):
                        segmentation=None, origin=[500, 500], 
                        xcenter=0., ycenter=0., pad=0, grow=1, beam='A',
                        conf=['WFC3','F140W', 'G141'], scale=1.,
-                       fwcpos=None):
+                       fwcpos=None, MW_EBV=0., yoffset=0):
         """Object for computing dispersed model spectra
         
         Parameters
@@ -129,6 +134,12 @@ class GrismDisperser(object):
         
         fwcpos : float
             Rotation position of the NIRISS filter wheel
+        
+        MW_EBV : float
+            Galactic extinction
+        
+        yoffset : float
+            Cross-dispersion offset to apply to the trace
             
         Attributes
         ----------
@@ -179,6 +190,10 @@ class GrismDisperser(object):
         self.pad = pad
         self.grow = grow
         
+        ### Galactic extinction
+        self.MW_EBV = MW_EBV
+        self.init_galactic_extinction(self.MW_EBV)
+            
         self.fwcpos = fwcpos
         self.scale = scale
         
@@ -203,6 +218,7 @@ class GrismDisperser(object):
         
         ### Initialize attributes        
         self.spectrum_1d =  None
+        self.is_cgs = False
         
         self.xc = self.sh[1]/2+self.origin[1]
         self.yc = self.sh[0]/2+self.origin[0]
@@ -221,8 +237,42 @@ class GrismDisperser(object):
         else:
             self.conf = conf
         
+        # Get Pixel area map (xxx need to add test for WFC3)
+        self.PAM_value = self.get_PAM_value(verbose=False)
+        #print('xxx PAM!')
+                
         self.process_config()
+    
+        self.yoffset = yoffset
+        if yoffset != 0:
+            #print('yoffset!', yoffset)
+            self.add_ytrace_offset(yoffset)
+            
+    def init_galactic_extinction(self, MW_EBV=0., R_V=utils.MW_RV):
+        """
+        Initialize Fitzpatrick 99 Galactic extinction
         
+        Parameters
+        ----------
+        MW_EBV : float
+            Local E(B-V)
+        
+        R_V : float
+            Relation between specific and total extinction, 
+            ``a_v = r_v * ebv``.
+        
+        Returns
+        -------
+        Sets `self.MW_F99` attribute, which is a callable function that 
+        returns the extinction for a supplied array of wavelengths.
+        
+        If MW_EBV <= 0, then sets `self.MW_F99 = None`.
+        
+        """
+        self.MW_F99 = None
+        if MW_EBV > 0:
+            self.MW_F99 = utils.MW_F99(MW_EBV*R_V, r_v=R_V)
+            
     def process_config(self):
         """Process grism config file
         
@@ -267,15 +317,23 @@ class GrismDisperser(object):
         ### Interpolate the sensitivity curve on the wavelength grid. 
         ysens = self.lam_beam*0
         so = np.argsort(self.lam_beam)
+        
+        conf_sens = self.conf.sens[self.beam]
+        if self.MW_F99 is not None:
+            MWext = 10**(-0.4*(self.MW_F99(conf_sens['WAVELENGTH']*u.AA)))
+        else:
+            MWext = 1.
+        
         ysens[so] = interp.interp_conserve_c(self.lam_beam[so],
-                                 self.conf.sens[self.beam]['WAVELENGTH'], 
-                                 self.conf.sens[self.beam]['SENSITIVITY'])
+                                             conf_sens['WAVELENGTH'], 
+                                             conf_sens['SENSITIVITY']*MWext,
+                                             integrate=1, left=0, right=0)
         self.lam_sort = so
         
         ### Needs term of delta wavelength per pixel for flux densities
-        dl = np.abs(np.append(self.lam_beam[1] - self.lam_beam[0],
-                              np.diff(self.lam_beam)))
-        ysens *= 1.e-17*dl
+        #dl = np.abs(np.append(self.lam_beam[1] - self.lam_beam[0],
+        #                     np.diff(self.lam_beam)))
+        #ysens *= dl#*1.e-17
         self.sensitivity_beam = ysens
         
         ### Initialize the model arrays
@@ -313,12 +371,13 @@ class GrismDisperser(object):
         ysens = self.lam*0
         so = np.argsort(self.lam)
         ysens[so] = interp.interp_conserve_c(self.lam[so],
-                                 self.conf.sens[self.beam]['WAVELENGTH'], 
-                                 self.conf.sens[self.beam]['SENSITIVITY'])
+                                             conf_sens['WAVELENGTH'], 
+                                             conf_sens['SENSITIVITY']*MWext,
+                                             integrate=1, left=0, right=0)
         
-        dl = np.abs(np.append(self.lam[1] - self.lam[0],
-                              np.diff(self.lam)))
-        ysens *= 1.e-17*dl
+        # dl = np.abs(np.append(self.lam[1] - self.lam[0],
+        #                       np.diff(self.lam)))
+        # ysens *= dl#*1.e-17
         self.sensitivity = ysens
         
         # Slices of the parent array based on the origin parameter
@@ -346,6 +405,7 @@ class GrismDisperser(object):
                                 beam=self.beam, fwcpos=self.fwcpos)
         
         self.ytrace_beam *= self.grow
+        self.yoffset = yoffset
         
         self.ytrace_beam += yoffset
         
@@ -373,7 +433,7 @@ class GrismDisperser(object):
         self.ytrace += yoffset
                 
     def compute_model(self, id=None, thumb=None, spectrum_1d=None,
-                      in_place=True, outdata=None, scale=None):
+                      in_place=True, modelf=None, scale=None, is_cgs=False):
         """Compute a model 2D grism spectrum
 
         Parameters
@@ -391,15 +451,18 @@ class GrismDisperser(object):
                 
         in_place : bool
             If True, put the 2D model in `self.model` and `self.modelf`, 
-            otherwise put the output in a clean array or preformed `outdata`. 
+            otherwise put the output in a clean array or preformed `modelf`. 
             
-        outdata : `~numpy.array` with shape = `self.sh_beam`
-            Preformed array to which the 2D model is added, if `in_place` is
-            False.
+        modelf : `~numpy.array` with shape = `self.sh_beam`
+            Preformed (flat) array to which the 2D model is added, if
+            `in_place` is False.
         
         scale : float or None
            Multiplicative factor to apply to the modeled spectrum.
-                       
+        
+        is_cgs : bool
+            Units of `spectrum_1d` fluxes are f_lambda cgs.
+            
         Returns
         -------
         model : `~numpy.ndarray`
@@ -429,15 +492,19 @@ class GrismDisperser(object):
                                                 xspec, yspec)*scale
         else:
             scale_spec = scale
-            
+        
+        self.is_cgs = is_cgs
+        if is_cgs:
+            scale_spec /= self.total_flux
+               
         ### Output data, fastest is to compute in place but doesn't zero-out
         ### previous result                    
         if in_place:
             self.modelf *= 0
-            outdata = self.modelf
+            modelf = self.modelf
         else:
-            if outdata is None:
-                outdata = self.modelf*0
+            if modelf is None:
+                modelf = self.modelf*0
                 
         ### Optionally use a different direct image
         if thumb is None:
@@ -450,17 +517,36 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
                 return False
 
         ### Now compute the dispersed spectrum using the C helper
-        status = disperse.disperse_grism_object(thumb, self.seg, id,
-                                 self.flat_index, self.yfrac_beam,
-                                 self.sensitivity_beam*scale_spec,
-                                 outdata, self.x0, np.array(self.sh),
+        nonz = (self.sensitivity_beam*scale_spec) != 0
+        
+        if nonz.sum() > 0:
+            status = disperse.disperse_grism_object(thumb, self.seg, id,
+                                 self.flat_index[nonz], self.yfrac_beam[nonz],
+                                 (self.sensitivity_beam*scale_spec)[nonz],
+                                 modelf, self.x0, np.array(self.sh),
                                  self.x0, np.array(self.sh_beam))
-
+        
+        #print('yyy PAM')
+        modelf /= self.PAM_value #= self.get_PAM_value()
+        
         if not in_place:
-            return outdata
+            return modelf
         else:
+            self.model = modelf.reshape(self.sh_beam)
             return True
     
+    def init_optimal_profile(self):
+        """Initilize optimal extraction profile
+        """
+        if hasattr(self, 'psf_params'):
+            m = self.compute_model_psf(id=self.id, in_place=False)
+        else:
+            m = self.compute_model(id=self.id, in_place=False)
+        
+        m = m.reshape(self.sh_beam)
+        m[m < 0] = 0
+        self.optimal_profile = m/m.sum(axis=0)
+        
     def optimal_extract(self, data, bin=0, ivar=1., weight=1.):        
         """`Horne (1986) <http://adsabs.harvard.edu/abs/1986PASP...98..609H>`_ optimally-weighted 1D extraction
         
@@ -490,11 +576,8 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         import scipy.ndimage as nd
                
         if not hasattr(self, 'optimal_profile'):
-            m = self.compute_model(id=self.id, in_place=False)
-            m = m.reshape(self.sh_beam)
-            m[m < 0] = 0
-            self.optimal_profile = m/m.sum(axis=0)
-        
+            self.init_optimal_profile()
+            
         if data.shape != self.sh_beam:
             print("""
 `data` ({0},{1}) must have the same shape as the data array ({2},{3})
@@ -528,13 +611,13 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         
         return wave, opt_flux, opt_rms
     
-    def trace_extract(self, data, r=0, bin=0, ivar=1.):
+    def trace_extract(self, data, r=0, bin=0, ivar=1., dy0=0):
         """Aperture extraction along the trace
         
         Parameters
         ----------
         data : array-like
-            Data array with dimenions equivalent to those of `self.model`self.
+            Data array with dimenions equivalent to those of `self.model`
         
         r : int
             Radius of of the aperture to extract, in pixels.  The extraction
@@ -547,7 +630,11 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         ivar : float or `~numpy.ndarray` with shape `self.sh_beam`
             Inverse variance array or scalar float that multiplies the 
             optimal weights
-
+        
+        dy0 : float 
+            Central pixel to extract, relative to the central pixel of 
+            the trace
+            
         Returns
         -------
         wave, opt_flux, opt_rms : `~numpy.array`
@@ -559,7 +646,7 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
 
         All are optionally binned in wavelength if `bin` > 1.        
         """
-        dy = np.cast[int](np.round(self.ytrace))
+        dy = np.cast[int](np.round(self.ytrace+dy0))
         aper = np.zeros_like(self.model)
         y0 = self.sh_beam[0] // 2
         for d in range(-r, r+1):
@@ -699,7 +786,7 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         limits : None, list = `[x0, x1, dx]`
             Will automatically use the whole wavelength range defined by the
             spectrum. To change, specify `limits = [x0, x1, dx]` to
-            interpolate `self.wave` between x0*wscale and x1*wscale.
+            interpolate `self.beam.lam_beam` between x0*wscale and x1*wscale.
 
         mpl_axis : `matplotlib.axes._axes.Axes`
             Plotting axis to place the labels, e.g., 
@@ -760,6 +847,285 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         else:
             return xpix
     
+    def x_init_epsf(self, flat_sensitivity=False, psf_params=None, psf_filter='F140W', yoff=0.0, skip=0.5, get_extended=False, seg_mask=True):
+        """Initialize ePSF fitting for point sources
+        TBD
+        """
+        import scipy.sparse
+        import scipy.ndimage
+        
+        #print('SKIP: {0}'.format(skip))
+        
+        EPSF = utils.EffectivePSF()
+        if psf_params is None:
+            self.psf_params = [self.total_flux, 0., 0.]
+        else:    
+            self.psf_params = psf_params
+        
+        if self.psf_params[0] is None:
+            self.psf_params[0] = self.total_flux#/photflam_list[psf_filter]
+        
+        origin = np.array(self.origin) - np.array(self.pad)
+        
+        self.psf_yoff = yoff
+        self.psf_filter = psf_filter
+        
+        self.psf = EPSF.get_ePSF(self.psf_params, origin=origin, shape=self.sh, filter=psf_filter, get_extended=get_extended)
+        #print('XXX', self.psf_params[0], self.psf.sum())
+        
+        # self.psf_params[0] /= self.psf.sum()
+        # self.psf /= self.psf.sum()
+                
+        # Center in detector coords
+        y0, x0 = np.array(self.sh)/2.-1
+        xd = x0+self.psf_params[1] + origin[1]
+        yd = y0+self.psf_params[2] + origin[0] 
+
+        # Get wavelength array
+        psf_xy_lam = []
+        psf_ext_lam = []
+        
+        for i, filter in enumerate(['F105W', 'F125W', 'F160W']):
+            psf_xy_lam.append(EPSF.get_at_position(x=xd, y=yd, filter=filter))
+            psf_ext_lam.append(EPSF.extended_epsf[filter])
+        
+        filt_ix = np.arange(3)
+        filt_lam = np.array([1.0551, 1.2486, 1.5369])*1.e4
+        
+        yp_beam, xp_beam = np.indices(self.sh_beam)
+        xarr = np.arange(0,self.lam_beam.shape[0], skip)
+        xarr = xarr[xarr <= self.lam_beam.shape[0]-1]
+        xbeam = np.arange(self.lam_beam.shape[0])*1.
+        
+        #xbeam += 1.
+        
+        #yoff = 0 #-0.15
+        psf_model = self.model*0.
+        A_psf = []
+        lam_psf = []
+        
+        lam_offset = self.psf_params[1] #self.sh[1]/2 - self.psf_params[1] - 1
+        self.lam_offset = lam_offset
+        
+        for xi in xarr:
+            yi = np.interp(xi, xbeam, self.ytrace_beam)
+            li = np.interp(xi, xbeam, self.lam_beam) 
+            dx = xp_beam-self.psf_params[1]-xi-x0
+            dy = yp_beam-self.psf_params[2]-yi+yoff-y0
+            
+            # wavelength-dependent
+            ii = np.interp(li, filt_lam, filt_ix, left=-1, right=10)
+            if ii == -1:
+                psf_xy_i = psf_xy_lam[0]*1
+                psf_ext_i = psf_ext_lam[0]*1
+            elif ii == 10:
+                psf_xy_i = psf_xy_lam[2]*1
+                psf_ext_i = psf_ext_lam[2]*1
+            else:
+                ni = int(ii)
+                f = 1-(li-filt_lam[ni])/(filt_lam[ni+1]-filt_lam[ni])
+                psf_xy_i = f*psf_xy_lam[ni] + (1-f)*psf_xy_lam[ni+1]
+                psf_ext_i = f*psf_ext_lam[ni] + (1-f)*psf_ext_lam[ni+1]
+            
+            if not get_extended:
+                psf_ext_i = None
+                
+            psf = EPSF.eval_ePSF(psf_xy_i, dx, dy, extended_data=psf_ext_i)*self.psf_params[0]
+            #print(xi, psf.sum())
+            
+            if seg_mask:
+                segm = nd.maximum_filter((self.seg == self.id)*1., size=7)
+                #yps, xps = np.indices(self.sh)
+                seg_i = nd.map_coordinates(segm, np.array([dx+x0, dy+y0]), order=1, mode='constant', cval=0.0, prefilter=True) > 0
+            else:
+                seg_i = 1
+                
+            A_psf.append((psf*seg_i).flatten())
+            lam_psf.append(li)
+                    
+        # Sensitivity
+        self.lam_psf = np.array(lam_psf)
+        
+        #photflam = photflam_list[psf_filter]
+        photflam = 1
+        
+        if flat_sensitivity:
+            psf_sensitivity = np.abs(np.gradient(self.lam_psf))*photflam
+        else:
+            sens = self.conf.sens[self.beam]
+            # so = np.argsort(self.lam_psf)
+            # s_i = interp.interp_conserve_c(self.lam_psf[so], sens['WAVELENGTH'], sens['SENSITIVITY'], integrate=1)
+            # psf_sensitivity = s_i*0.
+            # psf_sensitivity[so] = s_i
+            
+            if self.MW_F99 is not None:
+                MWext = 10**(-0.4*(self.MW_F99(sens['WAVELENGTH']*u.AA)))
+            else:
+                MWext = 1.
+                                    
+            psf_sensitivity = self.get_psf_sensitivity(sens['WAVELENGTH'], sens['SENSITIVITY']*MWext)
+            
+        self.psf_sensitivity = psf_sensitivity
+        self.A_psf = scipy.sparse.csr_matrix(np.array(A_psf).T)
+        #self.init_extended_epsf()
+        
+        self.PAM_value = self.get_PAM_value()
+        self.psf_scale_to_data = 1.
+        self.psf_renorm = 1.
+        
+        self.renormalize_epsf_model()
+        
+        self.init_optimal_profile()
+    
+    def get_psf_sensitivity(self, wave, sensitivity):
+        """
+        Integrate the sensitivity curve to the wavelengths for the 
+        PSF model
+        """
+        so = np.argsort(self.lam_psf)
+        s_i = interp.interp_conserve_c(self.lam_psf[so], wave, sensitivity, integrate=1)
+        psf_sensitivity = s_i*0.
+        psf_sensitivity[so] = s_i
+        return psf_sensitivity
+        
+    def renormalize_epsf_model(self, spectrum_1d=None, verbose=False):
+        """
+        Ensure normalization correct
+        """
+        if not hasattr(self, 'A_psf'):
+            print('ePSF not initialized')
+            return False
+        
+        if spectrum_1d is None:
+            dl = 0.1
+            flat_x = np.arange(self.lam.min()-10, self.lam.max()+10, dl)
+            flat_y = flat_x*0.+1.e-17
+            spectrum_1d = [flat_x, flat_y]
+            
+        tab = self.conf.sens[self.beam]
+        if self.MW_F99 is not None:
+            MWext = 10**(-0.4*(self.MW_F99(tab['WAVELENGTH']*u.AA)))
+        else:
+            MWext = 1.
+        
+        sens_i = interp.interp_conserve_c(spectrum_1d[0], tab['WAVELENGTH'], tab['SENSITIVITY']*MWext, integrate=1, left=0, right=0)
+        total_sens = np.trapz(spectrum_1d[1]*sens_i/np.gradient(spectrum_1d[0]), spectrum_1d[0])
+        
+        m = self.compute_model_psf(spectrum_1d=spectrum_1d, is_cgs=True, in_place=False).reshape(self.sh_beam)
+        #m2 = self.compute_model(spectrum_1d=[flat_x, flat_y], is_cgs=True, in_place=False).reshape(self.sh_beam)
+        
+        renorm = total_sens / m.sum()
+        self.psf_renorm = renorm
+        
+        # Scale model to data, depends on Pixel Area Map and PSF normalization
+        scale_to_data = self.PAM_value #* (self.psf_params[0]/0.975)
+        self.psf_scale_to_data = scale_to_data
+        renorm /= scale_to_data # renorm PSF
+
+        if verbose:
+            print('Renorm ePSF model: {0:0.3f}'.format(renorm))
+        
+        self.A_psf *= renorm
+        
+    def get_PAM_value(self, verbose=False):
+        """
+        Apply Pixel Area Map correction to WFC3 effective PSF model
+        
+        http://www.stsci.edu/hst/wfc3/pam/pixel_area_maps
+        """        
+        confp = self.conf.conf
+        if ('INSTRUMENT' in confp) & ('CAMERA' in confp):
+            if '{0}-{1}'.format(confp['INSTRUMENT'], confp['CAMERA']) != 'WFC3-IR':
+                return 1
+        else:
+            return 1
+            
+        try:
+            pam_data = pyfits.open(os.getenv('iref')+'ir_wfc3_map.fits')[1].data
+            pam_value = pam_data[int(self.yc-self.pad), int(self.xc-self.pad)]
+        except:
+            pam_value = 1
+            
+        if verbose:
+            print ('PAM correction at x={0}, y={1}: {2:.3f}'.format(self.xc-self.pad, self.yc-self.pad, pam_value))
+        
+        return pam_value
+        
+        
+    def init_extended_epsf(self):
+        """
+        Hacky code for adding extended component of the EPSFs
+        """
+        ext_file = os.path.join(GRIZLI_PATH, 'CONF',
+                            'ePSF_extended_splines.npy')
+        
+        if not os.path.exists(ext_file):
+            return False
+            
+        bg_splines = np.load(ext_file)[0]
+        spline_waves = np.array(list(bg_splines.keys()))
+        spline_waves.sort()
+        spl_ix = np.arange(len(spline_waves))
+        
+        yarr = np.arange(self.sh_beam[0]) - self.sh_beam[0]/2.+1
+        dy = self.psf_params[2]
+
+        spl_data = self.model * 0.
+        for i in range(self.sh_beam[1]):
+            dy_i = dy + self.ytrace[i]
+            x_i = np.interp(self.lam[i], spline_waves, spl_ix)
+            if (x_i == 0) | (x_i == len(bg_splines)-1):
+                spl_data[:,i] = bg_splines[spline_waves[int(x_i)]](yarr-dy_i)
+            else:
+                f = x_i-int(x_i)
+                sp = bg_splines[spline_waves[int(x_i)]](yarr-dy_i)*(1-f)
+                sp += bg_splines[spline_waves[int(x_i)+1]](yarr-dy_i)*f
+                
+                spl_data[:,i] = sp
+                
+        self.ext_psf_data = np.maximum(spl_data, 0)
+        
+    def compute_model_psf(self, id=None, spectrum_1d=None, in_place=True, is_cgs=False):
+        if spectrum_1d is None:
+            #modelf = np.array(self.A_psf.sum(axis=1)).flatten()
+            #model = model.reshape(self.sh_beam)
+            coeffs = np.ones(self.A_psf.shape[1])
+            if not is_cgs:
+                coeffs *= self.total_flux
+        else:
+            dx = np.diff(self.lam_psf)[0]
+            if dx < 0:
+                coeffs = interp.interp_conserve_c(self.lam_psf[::-1],
+                                                  spectrum_1d[0], 
+                                                  spectrum_1d[1])[::-1]
+            else:
+                coeffs = interp.interp_conserve_c(self.lam_psf,
+                                                  spectrum_1d[0], 
+                                                  spectrum_1d[1])
+                     
+            if not is_cgs:
+                coeffs *= self.total_flux
+                
+        modelf = self.A_psf.dot(coeffs*self.psf_sensitivity)
+        model = modelf.reshape(self.sh_beam)
+        
+        # if hasattr(self, 'ext_psf_data'):
+        #     model += self.ext_psf_data*model.sum(axis=0)
+        #     modelf = model.flatten()
+        #     model = modelf.reshape(self.sh_beam)
+            
+        if in_place:
+            
+            self.spectrum_1d = spectrum_1d
+            self.is_cgs = is_cgs
+                    
+            self.modelf = modelf #.flatten()
+            self.model = model
+            #self.modelf = self.model.flatten()
+            return True
+        else:
+            return modelf #.flatten()
+            
 class ImageData(object):
     """Container for image data with WCS, etc."""
     def __init__(self, sci=None, err=None, dq=None,
@@ -832,20 +1198,49 @@ class ImageData(object):
           
         ### Easy way, get everything from an image HDU list
         if isinstance(hdulist, pyfits.HDUList):
-            sci = np.cast[np.float32](hdulist['SCI',sci_extn].data)
-            err = np.cast[np.float32](hdulist['ERR',sci_extn].data)
-            dq = np.cast[np.int16](hdulist['DQ',sci_extn].data)
             
-            if 'ORIGINX' in hdulist['SCI', sci_extn].header:
-                h0 = hdulist['SCI', sci_extn].header
+            if ('REF',sci_extn) in hdulist:
+                ref_h = hdulist['REF', sci_extn].header
+                ref_data = hdulist['REF', sci_extn].data/ref_h['PHOTFLAM']
+                ref_data = np.cast[np.float32](ref_data)
+                
+                ref_file = ref_h['REF_FILE']
+                ref_photflam = 1.
+                ref_photplam = ref_h['PHOTPLAM']
+                ref_filter = ref_h['FILTER']
+            else:
+                ref_data = None
+            
+            if ('SCI',sci_extn) in hdulist:
+                sci = np.cast[np.float32](hdulist['SCI',sci_extn].data)
+                err = np.cast[np.float32](hdulist['ERR',sci_extn].data)
+                dq = np.cast[np.int16](hdulist['DQ',sci_extn].data)
+                
+                base_extn = ('SCI', sci_extn)
+                
+            else:
+                if ref_data is None:
+                    raise KeyError ('No SCI or REF extensions found')
+                
+                # Doesn't have SCI, get from ref
+                sci = err = ref_data*0.+1
+                dq = np.zeros(sci.shape, dtype=np.int16)
+                base_extn = ('REF', sci_extn)
+                
+            if 'ORIGINX' in hdulist[base_extn].header:
+                h0 = hdulist[base_extn].header
                 origin = [h0['ORIGINY'], h0['ORIGINX']]
             else:
                 origin = [0,0]
             
             self.sci_extn = sci_extn    
-            self.parent_file = hdulist.filename()
+            header = hdulist[base_extn].header.copy()
             
-            header = hdulist['SCI',sci_extn].header.copy()
+            if 'PARENT' in header:
+                self.parent_file = header['PARENT']
+            else:
+                self.parent_file = hdulist.filename()
+
             if 'CPDIS1' in header:
                 if 'Lookup' in header['CPDIS1']:
                     self.wcs_is_lookup = True
@@ -855,7 +1250,7 @@ class ImageData(object):
                 self.wcs_is_lookup = False
                     
             status = False
-            for ext in [0, ('SCI',sci_extn)]:
+            for ext in [base_extn, 0]:
                 h = hdulist[ext].header
                 if 'INSTRUME' in h:
                     status = True
@@ -882,19 +1277,37 @@ class ImageData(object):
             else:
                 photplam = photplam_list[filter]
                         
-            if 'MDRIZSKY' in hdulist[('SCI',sci_extn)].header:
-                sci -= hdulist[('SCI',sci_extn)].header['MDRIZSKY']
+            self.mdrizsky = 0.
+            if 'MDRIZSKY' in header:
+                #sci -= header['MDRIZSKY']
+                self.mdrizsky = header['MDRIZSKY']
                 
             ### ACS bunit
-            exptime = 1.
-            if 'BUNIT' in hdulist['SCI', sci_extn].header:
-                if hdulist['SCI', sci_extn].header['BUNIT'] == 'ELECTRONS':
-                    exptime = hdulist[0].header['EXPTIME']
-                    sci /= exptime
-                    err /= exptime
-                           
+            #self.exptime = 1.
+            if 'EXPTIME' in hdulist[0].header:
+                self.exptime = hdulist[0].header['EXPTIME']
+            else:
+                self.exptime = hdulist[0].header['EFFEXPTM']
+                
+            # if 'BUNIT' in header:
+            #     if header['BUNIT'] == 'ELECTRONS':
+            #         self.exptime = hdulist[0].header['EXPTIME']
+            #         # sci /= self.exptime
+            #         # err /= self.exptime
+            
+            sci = (sci-self.mdrizsky)
+            
+            if 'BUNIT' in header:
+                if header['BUNIT'] == 'ELECTRONS':
+                    sci /= self.exptime
+                    err /= self.exptime
+                   
             if filter.startswith('G'):
                 photflam = 1
+            
+            if (instrument == 'NIRCAM') & (pupil is not None):
+                if pupil.startswith('G'):
+                    photflam = 1
             
             if 'PAD' in header:
                 pad = header['PAD']
@@ -902,17 +1315,7 @@ class ImageData(object):
             self.grow = 1
             if 'GROW' in header:
                 self.grow = header['GROW']
-            
-            if ('REF',sci_extn) in hdulist:
-                ref_h = hdulist['REF', sci_extn].header
-                ref_data = hdulist['REF', sci_extn].data/ref_h['PHOTFLAM']
-                ref_file = ref_h['REF_FILE']
-                ref_photflam = 1.
-                ref_photplam = ref_h['PHOTPLAM']
-                ref_filter = ref_h['FILTER']
-            else:
-                ref_data = None
-                
+                            
         else:
             if sci is None:
                 sci = np.zeros((1014,1014))
@@ -922,12 +1325,31 @@ class ImageData(object):
             self.grow = 1
             ref_data = None
             
+            if 'EXPTIME' in header:
+                self.exptime = header['EXPTIME']
+            else:
+                self.exptime = 1.
+
+            if 'MDRIZSKY' in header:
+                self.mdrizsky = header['MDRIZSKY']
+            else:
+                self.mdrizsky = 0.
+            
+            if 'CPDIS1' in header:
+                if 'Lookup' in header['CPDIS1']:
+                    self.wcs_is_lookup = True
+                else:
+                    self.wcs_is_lookup = False
+            else:
+                self.wcs_is_lookup = False
+                
         self.is_slice = False
         
         ### Array parameters
         self.pad = pad
         self.origin = origin
         self.fwcpos = None
+        self.MW_EBV = 0.
         
         self.data = OrderedDict()
         self.data['SCI'] = sci*photflam
@@ -940,6 +1362,10 @@ class ImageData(object):
             
         self.instrument = instrument
         self.header = header
+        if 'ISCUTOUT' in self.header:
+            self.is_slice = self.header['ISCUTOUT']
+            
+        self.header['EXPTIME'] = self.exptime
         
         self.photflam = photflam
         self.photplam = photplam
@@ -975,6 +1401,10 @@ class ImageData(object):
             self.ref_filter = ref_filter
             
         self.wcs = None
+        
+        if instrument in ['NIRISS','NIRCAM']:
+            self.update_jwst_wcsheader(hdulist)
+            
         if self.header is not None:
             if wcs is None:
                 self.get_wcs()
@@ -983,12 +1413,24 @@ class ImageData(object):
         else:
             self.header = pyfits.Header()
         
+        # Detector chip
+        if 'CCDCHIP' in self.header:
+            self.ccdchip = self.header['CCDCHIP']
+        else:
+            self.ccdchip = 1
+            
         # For NIRISS
         if 'FWCPOS' in self.header:
-            self.fwcpos = self.grism.header['FWCPOS']
+            self.fwcpos = self.header['FWCPOS']
         else:
             self.fwcpos = None
         
+        # Galactic extinction
+        if 'MW_EBV' in self.header:
+            self.MW_EBV = self.header['MW_EBV']
+        else:
+            self.MW_EBV = 0.
+            
     def unset_dq(self):
         """Flip OK data quality bits using utils.unset_dq_bits
         
@@ -1031,40 +1473,75 @@ class ImageData(object):
         bad = self.data['SCI'] < sigma*self.data['ERR']
         self.data['DQ'][bad] |= 4
         return bad.sum()
+    
+    def update_jwst_wcsheader(self, hdulist):
+        """
+        For now generate an approximate SIP header for NIRISS
+        """    
+        from . import jwst as _jwst
         
+        datamodel = _jwst.img_with_wcs(hdulist)
+        sip_header = _jwst.model_wcs_header(datamodel, get_sip=True)
+        for k in sip_header:
+            self.header[k] = sip_header[k]
+        
+        # Remove PC
+        for i in [1,2]:
+            for j in [1,2]:
+                k = 'PC{0}_{1}'.format(i,j)
+                if k in self.header:
+                    self.header.remove(k)
+                    
     def get_wcs(self):
         """Get WCS from header"""
         import numpy.linalg
+        import stwcs
         
         if self.wcs_is_lookup:
-            fobj = pyfits.open(self.parent_file)
-            
-            try:
-                import stwcs
+
+            if 'CCDCHIP' in self.header:
+                ext = {1:2,2:1}[self.header['CCDCHIP']]
+            else:
                 ext = self.header['EXTVER']
-                #print(self.parent_file, 'Extension: {0}'.format(ext))
-                self.wcs = stwcs.wcsutil.hstwcs.HSTWCS(fobj=fobj, ext=('SCI',ext))
+            
+            if os.path.exists(self.parent_file):
+                fobj = pyfits.open(self.parent_file)
+                wcs = stwcs.wcsutil.hstwcs.HSTWCS(fobj=fobj, ext=('SCI',ext))
                 if self.pad > 0:
-                    self.wcs = self.add_padding_to_wcs(self.wcs, pad=self.pad)
+                    wcs = self.add_padding_to_wcs(wcs, pad=self.pad)
+            
+            else:
+                # Get WCS from a stripped wcs.fits file (from self.save_wcs)
+                # already padded.
+                wcsfile = self.parent_file.replace('.fits', '.{0:02d}.wcs.fits'.format(ext))
+                fobj = pyfits.open(wcsfile)
+                fh = fobj[0].header
+                if fh['NAXIS'] == 0:
+                    fh['NAXIS'] = 2
+                    fh['NAXIS1'] = int(fh['CRPIX1']*2)
+                    fh['NAXIS2'] = int(fh['CRPIX2']*2)
+                    
+                wcs = stwcs.wcsutil.hstwcs.HSTWCS(fobj=fobj, ext=0)
+            
+            #print('XXX WCS',wcs)
+                                        
+            # Object is a cutout
+            if self.is_slice:
+                slx = slice(self.origin[1], self.origin[1]+self.sh[1])
+                sly = slice(self.origin[0], self.origin[0]+self.sh[0])
                 
-            except:
-                self.wcs = pywcs.WCS(self.header, relax=True, fobj=fobj)
+                wcs = self.get_slice_wcs(wcs, slx=slx, sly=sly)
+
                 
         else:
             fobj = None
-            self.wcs = pywcs.WCS(self.header, relax=True, fobj=fobj)
+            wcs = pywcs.WCS(self.header, relax=True, fobj=fobj)
                     
-        if not hasattr(self.wcs, 'pscale'):
-            # self.wcs.pscale = np.sqrt(self.wcs.wcs.cd[0,0]**2 +
-            #                           self.wcs.wcs.cd[1,0]**2)*3600.
-            
-            ### From stwcs.distortion.utils
-            # det = np.linalg.det(self.wcs.wcs.cd)
-            # self.wcs.pscale = np.sqrt(np.abs(det))*3600.
-            self.wcs.pscale = utils.get_wcs_pscale(self.wcs)
-            
-            #print '%s, PSCALE: %.4f' %(self.parent_file, self.wcs.pscale)
-    
+        if not hasattr(wcs, 'pscale'):
+            wcs.pscale = utils.get_wcs_pscale(wcs)
+                    
+        self.wcs = wcs
+        
     @staticmethod
     def add_padding_to_wcs(wcs_in, pad=200):
         """Pad the appropriate WCS keywords"""
@@ -1073,7 +1550,8 @@ class ImageData(object):
         for attr in ['naxis1', '_naxis1', 'naxis2', '_naxis2']:
             if hasattr(wcs, attr):
                 value = wcs.__getattribute__(attr) 
-                wcs.__setattr__(attr, value+2*pad)
+                if value is not None:
+                    wcs.__setattr__(attr, value+2*pad)
         
         wcs.naxis1 = wcs._naxis1
         wcs.naxis2 = wcs._naxis2
@@ -1266,9 +1744,12 @@ class ImageData(object):
         
         #ref = pyfits.open(refimage)
         if hdu.data.dtype.type != np.float32:
-            hdu.data = np.cast[np.float32](hdu.data)
+            #hdu.data = np.cast[np.float32](hdu.data)
+            refdata = np.cast[np.float32](hdu.data)
+        else:
+            refdata = hdu.data
         
-        refdata = hdu.data
+        
         if 'ORIENTAT' in hdu.header.keys():
             hdu.header.remove('ORIENTAT')
             
@@ -1299,15 +1780,24 @@ class ImageData(object):
             ### Handle segmentation images a bit differently to preserve
             ### integers.
             ### +1 here is a hack for some memory issues
-            blotted_seg = astrodrizzle.ablot.do_blot(refdata+0., ref_wcs,
-                                flt_wcs, 1, coeffs=True, interp='nearest',
-                                sinscl=1.0, stepsize=10, wcsmap=None)
+            
+            seg_interp = 'nearest'
             
             blotted_ones = astrodrizzle.ablot.do_blot(seg_ones+1, ref_wcs,
-                                flt_wcs, 1, coeffs=True, interp='nearest',
+                                flt_wcs, 1, coeffs=True, 
+                                interp=seg_interp,
                                 sinscl=1.0, stepsize=10, wcsmap=None)
             
+            blotted_seg = astrodrizzle.ablot.do_blot(refdata*1., ref_wcs,
+                                flt_wcs, 1, coeffs=True, 
+                                interp=seg_interp,
+                                sinscl=1.0, stepsize=10, wcsmap=None)
+                        
             blotted_ones[blotted_ones == 0] = 1
+            
+            #pixel_ratio = (flt_wcs.idcscale / ref_wcs.idcscale)**2
+            #in_seg = np.abs(blotted_ones - pixel_ratio) < 1.e-2
+            
             ratio = np.round(blotted_seg/blotted_ones)
             seg = nd.maximum_filter(ratio, size=grow, mode='constant', cval=0)
             ratio[ratio == 0] = seg[ratio == 0]
@@ -1321,6 +1811,46 @@ class ImageData(object):
         
         return blotted
     
+    @staticmethod
+    def get_slice_wcs(wcs, slx=slice(480,520), sly=slice(480,520)):
+        """Get slice of a WCS including higher orders like SIP and DET2IM
+        
+        The normal `~astropy.wcs.wcs.WCS` `slice` method doesn't apply the
+        slice to all of the necessary keywords.  For example, SIP WCS also
+        has a `CRPIX` reference pixel that needs to be offset along with
+        the main `CRPIX`.
+        
+        Parameters
+        ----------
+        slx, sly : slice
+            Slices in x and y dimensions to extract
+        
+        """
+        NX = slx.stop - slx.start
+        NY = sly.stop - sly.start
+        
+        slice_wcs = wcs.slice((sly, slx))
+        slice_wcs.naxis1 = slice_wcs._naxis1 = NX
+        slice_wcs.naxis2 = slice_wcs._naxis2 = NY
+        
+        if hasattr(slice_wcs, 'sip'):
+            if slice_wcs.sip is not None:
+                for c in [0,1]:
+                    slice_wcs.sip.crpix[c] = slice_wcs.wcs.crpix[c]
+        
+        ACS_CRPIX = [4096/2,2048/2] # ACS
+        dx_crpix = slice_wcs.wcs.crpix[0] - ACS_CRPIX[0]
+        dy_crpix = slice_wcs.wcs.crpix[1] - ACS_CRPIX[1]
+        for ext in ['cpdis1','cpdis2','det2im1','det2im2']:
+            if hasattr(slice_wcs, ext):
+                wcs_ext = slice_wcs.__getattribute__(ext)
+                if wcs_ext is not None:
+                    wcs_ext.crval[0] += dx_crpix
+                    wcs_ext.crval[1] += dy_crpix
+                    slice_wcs.__setattr__(ext, wcs_ext)
+        
+        return slice_wcs
+        
     def get_slice(self, slx=slice(480,520), sly=slice(480,520), 
                  get_slice_header=True):
         """Return cutout version of the `ImageData` object
@@ -1359,9 +1889,10 @@ class ImageData(object):
         
         slice_origin = [self.origin[i] + origin[i] for i in range(2)]
         
-        slice_wcs = self.wcs.slice((sly, slx))
-        slice_wcs.naxis1 = slice_wcs._naxis1 = NX
-        slice_wcs.naxis2 = slice_wcs._naxis2 = NY
+        slice_wcs = self.get_slice_wcs(self.wcs, slx=slx, sly=sly)
+        # slice_wcs = self.wcs.slice((sly, slx))
+        #slice_wcs.naxis1 = slice_wcs._naxis1 = NX
+        #slice_wcs.naxis2 = slice_wcs._naxis2 = NY
         
         ### Getting the full header can be slow as there appears to 
         ### be substantial overhead with header.copy() and wcs.to_header()
@@ -1393,7 +1924,10 @@ class ImageData(object):
         slice_obj.ref_photflam = self.ref_photflam
         slice_obj.ref_photplam = self.ref_photplam
         slice_obj.ref_filter = self.ref_filter
-            
+        
+        slice_obj.mdrizsky = self.mdrizsky
+        slice_obj.exptime = self.exptime
+                            
         slice_obj.ABZP = self.ABZP
         slice_obj.thumb_extension = self.thumb_extension
         
@@ -1409,21 +1943,21 @@ class ImageData(object):
         slice_obj.sci_extn = self.sci_extn
         slice_obj.is_slice = True
         
-        if hasattr(slice_obj.wcs, 'sip'):
-            if slice_obj.wcs.sip is not None:
-                for c in [0,1]:
-                    slice_obj.wcs.sip.crpix[c] = slice_obj.wcs.wcs.crpix[c]
-        
-        ACS_CRPIX = [4096/2,2048/2] # ACS
-        dx_crpix = slice_obj.wcs.wcs.crpix[0] - ACS_CRPIX[0]
-        dy_crpix = slice_obj.wcs.wcs.crpix[1] - ACS_CRPIX[1]
-        for ext in ['cpdis1','cpdis2','det2im1','det2im2']:
-            if hasattr(slice_obj.wcs, ext):
-                wcs_ext = slice_obj.wcs.__getattribute__(ext)
-                if wcs_ext is not None:
-                    wcs_ext.crval[0] += dx_crpix
-                    wcs_ext.crval[1] += dy_crpix
-                    slice_obj.wcs.__setattr__(ext, wcs_ext)
+        # if hasattr(slice_obj.wcs, 'sip'):
+        #     if slice_obj.wcs.sip is not None:
+        #         for c in [0,1]:
+        #             slice_obj.wcs.sip.crpix[c] = slice_obj.wcs.wcs.crpix[c]
+        # 
+        # ACS_CRPIX = [4096/2,2048/2] # ACS
+        # dx_crpix = slice_obj.wcs.wcs.crpix[0] - ACS_CRPIX[0]
+        # dy_crpix = slice_obj.wcs.wcs.crpix[1] - ACS_CRPIX[1]
+        # for ext in ['cpdis1','cpdis2','det2im1','det2im2']:
+        #     if hasattr(slice_obj.wcs, ext):
+        #         wcs_ext = slice_obj.wcs.__getattribute__(ext)
+        #         if wcs_ext is not None:
+        #             wcs_ext.crval[0] += dx_crpix
+        #             wcs_ext.crval[1] += dy_crpix
+        #             slice_obj.wcs.__setattr__(ext, wcs_ext)
                            
         return slice_obj#, slx, sly
     
@@ -1458,12 +1992,22 @@ class ImageData(object):
         h['ISCUTOUT'] = self.is_slice, 'Arrays are sliced from larger image'
         h['ORIGINX'] = self.origin[1], 'Origin from parent image, x'
         h['ORIGINY'] = self.origin[0], 'Origin from parent image, y'
-        
+        h['PAD'] = (self.pad, 'Image padding used')
+
         hdu = []
         
-        hdu.append(pyfits.ImageHDU(data=self.data['SCI'], header=h,
+        exptime_corr = 1.
+        if 'BUNIT' in self.header:
+            if self.header['BUNIT'] == 'ELECTRONS':
+                exptime_corr = self.exptime
+        
+        # Put back into original units    
+        sci_data = self['SCI']*exptime_corr + self.mdrizsky
+        err_data = self['ERR']*exptime_corr
+        
+        hdu.append(pyfits.ImageHDU(data=sci_data, header=h,
                                    name='SCI'))
-        hdu.append(pyfits.ImageHDU(data=self.data['ERR'], header=h,
+        hdu.append(pyfits.ImageHDU(data=err_data, header=h,
                                    name='ERR'))
         hdu.append(pyfits.ImageHDU(data=self.data['DQ'], header=h, name='DQ'))
         
@@ -1668,7 +2212,7 @@ class GrismFLT(object):
         ### Grism configuration
         if 'DFILTER' in self.grism.header:
             direct_filter = self.grism.header['DFILTER']
-        elif self.grism.pupil is not None:
+        elif self.grism.instrument in ['NIRCAM','NIRISS']:
             direct_filter = self.grism.pupil
         else:
             direct_filter = self.direct.filter
@@ -1676,7 +2220,7 @@ class GrismFLT(object):
         self.conf_file = grismconf.get_config_filename(self.grism.instrument,
                                                        direct_filter,
                                                        self.grism.filter,
-                                                       sci_extn)
+                                                       self.grism.ccdchip)
         
         self.conf = grismconf.load_grism_config(self.conf_file)
         
@@ -1758,17 +2302,18 @@ class GrismFLT(object):
         self.direct.ref_filter = utils.get_hst_filter(refh)
         self.direct.ref_file = ref_str
         
+        key_list = {'PHOTFLAM':photflam_list, 'PHOTPLAM':photplam_list}
         for key in ['PHOTFLAM', 'PHOTPLAM']:
             if key in refh:
                 try:
-                    header_values[key] = ref_hdu.header['PHOTFLAM']*1.
+                    header_values[key] = ref_hdu.header[key]*1.
                 except TypeError:
-                    print('Problem processing header keyword PHOTFLAM: ** {0} **'.format(ref_hdu.header['PHOTFLAM']))
+                    print('Problem processing header keyword {0}: ** {1} **'.format(key, ref_hdu.header[key]))
                     raise TypeError
             else:
                 filt = self.direct.ref_filter
-                if filt in photflam_list:
-                    header_values[key] = photflam_list[filt]
+                if filt in key_list[key]:
+                    header_values[key] = key_list[key][filt]
                 else:
                     print('Filter "{0}" not found in {1} tabulated list'.format(filt, key))
                     raise IndexError
@@ -1864,8 +2409,8 @@ class GrismFLT(object):
                                                        extra=self.pad,
                                                        verbose=True)
                 
-            ### Make sure image big enough
-            seg_hdu = self.direct.expand_hdu(seg_hdu)
+                ### Make sure image big enough
+                seg_hdu = self.direct.expand_hdu(seg_hdu)
             
             if verbose:
                 print('{0} / blot segmentation {1}'.format(self.direct_file, seg_str))
@@ -1878,10 +2423,20 @@ class GrismFLT(object):
         else:
             self.seg = np.zeros(self.direct.sh, dtype=np.float32)
     
-    def get_dispersion_PA(self):
-        """
-        Compute exact PA of the dispersion axis, including tilt of the 
+    def get_dispersion_PA(self, decimals=0):
+        """Compute exact PA of the dispersion axis, including tilt of the 
         trace and the FLT WCS
+        
+        Parameters
+        ----------
+        decimals : int or None
+            Number of decimal places to round to, passed to `~numpy.round`. 
+            If None, then don't round.
+            
+        Returns
+        -------
+        dispersion_PA : float
+            PA (angle East of North) of the dispersion axis.
         """
         from astropy.coordinates import Angle
         import astropy.units as u
@@ -1902,11 +2457,19 @@ class GrismFLT(object):
                     np.arctan2(np.diff(r)*np.cos(d[0]/180*np.pi),
                                np.diff(d))[0]/np.pi*180)*u.deg)
                         
-        self.dispersion_PA = pa.wrap_at(360*u.deg).value
+        dispersion_PA = pa.wrap_at(360*u.deg).value
+        if decimals is not None:
+            dispersion_PA = np.round(dispersion_PA, decimals=decimals)
+        
+        self.dispersion_PA = dispersion_PA
+        return dispersion_PA
         
     def compute_model_orders(self, id=0, x=None, y=None, size=10, mag=-1,
-                      spectrum_1d=None, compute_size=False, store=True, 
-                      in_place=True, add=True, get_beams=None, verbose=True):
+                      spectrum_1d=None, is_cgs=False,
+                      compute_size=False, max_size=None, store=True, 
+                      in_place=True, add=True, get_beams=None, 
+                      psf_params=None, 
+                      verbose=True):
         """Compute dispersed spectrum for a given object id
         
         Parameters
@@ -1936,11 +2499,18 @@ class GrismFLT(object):
             
             >>> wavelength, flux = spectrum_1d
         
+        is_cgs : bool
+            Flux units of `spectrum_1d[1]` are cgs f_lambda flux densities, 
+            rather than normalized in the detection band.
+            
         compute_size : bool
             Ignore `x`, `y`, and `size` and compute the extent of the 
             segmentation polygon directly using 
             `utils_c.disperse.compute_segmentation_limits`.
         
+        max_size : int or None
+            Enforce a maximum size of the cutout when using `compute_size`.
+            
         store : bool
             If True, then store the computed beams in the OrderedDict
             `self.object_dispersers[id]`.  
@@ -1971,9 +2541,19 @@ class GrismFLT(object):
         
         # debug
         # x=None; y=None; size=10; mag=-1; spectrum_1d=None; compute_size=True; store=False; in_place=False; add=True; get_beams=['A']; verbose=True
-        if id in self.object_dispersers.keys():
+        if id in self.object_dispersers:
             object_in_model = True
             beams = self.object_dispersers[id]
+            
+            out = self.object_dispersers[id]
+            
+            # Handle pre 0.3.0-7 formats
+            if len(out) == 3:
+                old_cgs, old_spectrum_1d, beams = out
+            else:
+                old_cgs, old_spectrum_1d = out
+                beams = None
+            
         else:
             object_in_model = False
             beams = None
@@ -1982,9 +2562,18 @@ class GrismFLT(object):
             ext = 'SCI'
         else:
             ext = 'REF'
-            
+
+        # set up the beams to extract
+        if get_beams is None:
+            beam_names = self.conf.beams
+        else:
+            beam_names = get_beams
+        
+        # Did we initialize the PSF model this call?
+        INIT_PSF_NOW = False
+        
         ### Do we need to compute the dispersed beams?
-        if not isinstance(beams, OrderedDict):
+        if beams is None:
             ### Use catalog
             xcat = ycat = None
             if self.catalog is not None:
@@ -1997,6 +2586,12 @@ class GrismFLT(object):
                 xcat = self.catalog['x_flt'][ix][0]-1
                 ycat = self.catalog['y_flt'][ix][0]-1
                 #print '!!! X, Y: ', xcat, ycat, self.direct.origin, size
+                
+                # use x, y if defined
+                if x is not None:
+                    xcat = x
+                if y is not None: 
+                    ycat = y
                 
             if (compute_size) | (x is None) | (y is None) | (size is None):
                 ### Get the array indices of the segmentation region
@@ -2029,9 +2624,14 @@ class GrismFLT(object):
                     ## Enforce minimum size
                     size = np.maximum(size, 16)
                     size = np.maximum(size, 26)
+                    
+                    ## maximum size
+                    if max_size is not None:
+                        size = np.min([size, max_size])
+                        
                     ## Avoid problems at the array edges
                     size = np.min([size, int(x)-2, int(y)-2])
-                
+                    
                     if (size < 4):
                         return True
                     
@@ -2061,58 +2661,124 @@ class GrismFLT(object):
                     print('ID {0:d} not found in segmentation image'.format(id))
                 return False
             
+            # # Get precomputed dispersers
+            # beams, old_spectrum_1d, old_cgs = None, None, False
+            # if object_in_model:
+            #     out = self.object_dispersers[id]
+            #     
+            #     # Handle pre 0.3.0-7 formats
+            #     if len(out) == 3:
+            #         old_cgs, old_spectrum_1d, old_beams = out
+            #     else:
+            #         old_cgs, old_spectrum_1d = out
+            #         old_beams = None
+            #     
+            #     # Pull out just the requested beams
+            #     if old_beams is not None:
+            #         beams = OrderedDict()
+            #         for b in beam_names:
+            #             beams[b] = old_beams[b]
+            #             
+            #if beams is None:
+            
             ### Compute spectral orders ("beams")
             beams = OrderedDict()
-            if get_beams is None:
-                beam_names = self.conf.beams
-            else:
-                beam_names = get_beams
-                
-            for beam in beam_names:
+            
+            for b in beam_names:
                 ### Only compute order if bright enough
-                if mag > self.conf.conf['MMAG_EXTRACT_{0}'.format(beam)]:
+                if mag > self.conf.conf['MMAG_EXTRACT_{0}'.format(b)]:
                     continue
-                    
+                
                 try:
-                    b = GrismDisperser(id=id, direct=thumb, segmentation=seg_thumb, xcenter=xcenter, ycenter=ycenter, origin=origin, pad=self.pad, grow=self.grism.grow,beam=beam, conf=self.conf, fwcpos=self.grism.fwcpos)
+                    beam = GrismDisperser(id=id, direct=thumb, segmentation=seg_thumb, xcenter=xcenter, ycenter=ycenter, origin=origin, pad=self.pad, grow=self.grism.grow, beam=b, conf=self.conf, fwcpos=self.grism.fwcpos, MW_EBV=self.grism.MW_EBV)                            
                 except:
                     continue
                 
-                beams[beam] = b
-                if object_in_model:
-                    #old_spectrum_1d = beams
-                    old_spectrum_1d = self.object_dispersers[id]
-                    b.compute_model(id=id, spectrum_1d=old_spectrum_1d)
-            
-            if get_beams:
-                return beams
-                
-            if in_place:
-                if store:
-                    ### Save the computed beams 
-                    self.object_dispersers[id] = beams
+                # Set PSF model if necessary
+                if psf_params is not None:
+                    store = True
+                    INIT_PSF_NOW = True
+                    #print('xxx Init PSF', b)
+                    if self.direct.ref_filter is None:
+                        psf_filter = self.direct.filter
+                    else:
+                        psf_filter = self.direct.ref_filter
+                    
+                    beam.x_init_epsf(flat_sensitivity=False, psf_params=psf_params, psf_filter=psf_filter, yoff=0.)
+                    
+                beams[b] = beam
+        
+        # Compute old model
+        if object_in_model:
+            for b in beams:
+                beam = beams[b]
+                if hasattr(beam, 'psf') & (not INIT_PSF_NOW):
+                    store = True
+                    #print('xxx OLD PSF')
+                    beam.compute_model_psf(spectrum_1d=old_spectrum_1d,
+                                       is_cgs=old_cgs)
                 else:
-                    ### Just save the model spectrum (or empty spectrum)
-                    self.object_dispersers[id] = spectrum_1d
-                        
+                    beam.compute_model(spectrum_1d=old_spectrum_1d,
+                                       is_cgs=old_cgs)
+                               
+        if get_beams:
+            out_beams = OrderedDict()
+            for b in beam_names:
+                out_beams[b] = beams[b]
+            return out_beams
+                
         if in_place:
             ### Update the internal model attribute
             output = self.model
+            
+            if store:
+                ### Save the computed beams 
+                self.object_dispersers[id] = is_cgs, spectrum_1d, beams
+            else:
+                ### Just save the model spectrum (or empty spectrum)
+                self.object_dispersers[id] = is_cgs, spectrum_1d, None
         else:
             ### Create a fresh array
             output = np.zeros_like(self.model)
-                
+                                
+        # if in_place:
+        #     ### Update the internal model attribute
+        #     output = self.model
+        # else:
+        #     ### Create a fresh array
+        #     output = np.zeros_like(self.model)
+        
+        # Set PSF model if necessary
+        if psf_params is not None:
+            if self.direct.ref_filter is None:
+                psf_filter = self.direct.filter
+            else:
+                psf_filter = self.direct.ref_filter
+                                
         ### Loop through orders and add to the full model array, in-place or
         ### a separate image 
-        for b in beams.keys():
+        for b in beams:
             beam = beams[b]
-            
             ### Subtract previously-added model
-            if object_in_model & in_place:
+            if object_in_model & in_place:                                               
                 beam.add_to_full_image(-beam.model, output)
             
+            ### Update PSF params
+            # if psf_params is not None:
+            #     skip_init_psf = False
+            #     if hasattr(beam, 'psf_params'):
+            #         skip_init_psf |= np.product(np.isclose(beam.psf_params, psf_params)) > 0
+            #         
+            #     if not skip_init_psf:
+            #         beam.x_init_epsf(flat_sensitivity=False, psf_params=psf_params, psf_filter=psf_filter, yoff=0.06)
+                
+            ### Compute model
+            if hasattr(beam, 'psf'):
+                beam.compute_model_psf(spectrum_1d=spectrum_1d, is_cgs=is_cgs)
+            else:
+                beam.compute_model(spectrum_1d=spectrum_1d, is_cgs=is_cgs)
+            
             ### Add in new model
-            beam.compute_model(id=id, spectrum_1d=spectrum_1d)
             beam.add_to_full_image(beam.model, output)
         
         if in_place:
@@ -2171,7 +2837,7 @@ class GrismFLT(object):
         ### Now compute the full model
         for id_i, mag_i in zip(ids, mags):
             if verbose:
-                print(utils.no_newline + 'compute model id={0:d}'.format(id_i))
+                print(utils.NO_NEWLINE + 'compute model id={0:d}'.format(id_i))
                 
             self.compute_model_orders(id=id_i, compute_size=True, mag=mag_i, 
                                       in_place=True, store=store)
@@ -2220,7 +2886,7 @@ class GrismFLT(object):
             Detector coordinates will be computed with 
             `self.direct.wcs.all_world2pix` with `origin=1`.
         
-        ds9 : `pyds9.DS9`, optional
+        ds9 : `~grizli.ds9.DS9`, optional
             If provided, load circular regions at the derived detector
             coordinates.
         
@@ -2488,7 +3154,36 @@ class GrismFLT(object):
         fp = open('{0}.{1:02d}.GrismFLT.pkl'.format(root, self.grism.sci_extn), 'wb')
         pickle.dump(self, fp)
         fp.close()
-    
+        
+        self.save_wcs(overwrite=True, verbose=False)
+        
+    def save_wcs(self, overwrite=True, verbose=True):
+        """TBD
+        """
+        if self.direct.parent_file == self.grism.parent_file:
+            base_list = [self.grism]
+        else:
+            base_list = [self.direct, self.grism]
+            
+        for base in base_list:
+            hwcs = base.wcs.to_fits(relax=True)
+            hwcs[0].header['PAD'] = base.pad
+        
+            if 'CCDCHIP' in base.header:
+                ext = {1:2,2:1}[base.header['CCDCHIP']]
+            else:
+                ext = base.header['EXTVER']
+        
+            wcsfile = base.parent_file.replace('.fits', '.{0:02d}.wcs.fits'.format(ext))
+        
+            try:
+                hwcs.writeto(wcsfile, clobber=overwrite)
+            except:
+                hwcs.writeto(wcsfile, overwrite=overwrite)
+        
+            if verbose:
+                print(wcsfile)
+            
     def load_from_fits(self, save_file):
         """Load saved data from a FITS file
         
@@ -2522,6 +3217,8 @@ class GrismFLT(object):
                     self.grism.data[key] = fits[ext].data*1
             else:
                 pass
+        
+        del(fits)
                 
         return True
     
@@ -2530,10 +3227,20 @@ class GrismFLT(object):
         Rotate data & wcs so that spectra are increasing to +x
         """
         
-        if self.grism.filter == 'GR150C':
-            rot = 2
-        else:
-            rot = -1
+        if self.grism.instrument not in ['NIRCAM', 'NIRISS']:
+            return True
+            
+        if self.grism.instrument == 'NIRISS':
+            if self.grism.filter == 'GR150C':
+                rot = 2
+            else:
+                rot = -1
+        elif self.grism.instrument == 'NIRCAM':
+            # Only module A
+            if self.grism.pupil == 'GRISMC':
+                rot = 1
+            else:
+                return True
             
         if self.is_rotated:
             rot *= -1
@@ -2629,7 +3336,7 @@ class GrismFLT(object):
 class BeamCutout(object):
     def __init__(self, flt=None, beam=None, conf=None, 
                  get_slice_header=True, fits_file=None, scale=1., 
-                 contam_sn_mask=[10,3]):
+                 contam_sn_mask=[10,3], min_mask=0.01):
         """Cutout spectral object from the full frame.
         
         Parameters
@@ -2655,6 +3362,10 @@ class BeamCutout(object):
             
         contam_sn_mask : TBD
         
+        min_mask : float
+            Minimum factor relative to the maximum pixel value where the 
+            2D cutout data are considered good.
+            
         Attributes
         ----------
         grism, direct : `ImageData` (sliced)
@@ -2688,11 +3399,21 @@ class BeamCutout(object):
         poly_order : int
             Order of the polynomial model
         """
+        self.background = 0.
+        
         if fits_file is not None:
             self.load_fits(fits_file, conf)
         else:
             self.init_from_input(flt, beam, conf, get_slice_header)
-                    
+        
+        self.beam.scale = scale
+        self.contam_sn_mask = contam_sn_mask
+        self.min_mask = min_mask
+        self._parse_from_data(contam_sn_mask=contam_sn_mask,
+                              min_mask=min_mask)
+        
+    def _parse_from_data(self, contam_sn_mask=[10,3], min_mask=0.01):
+        
         ### bad pixels or problems with uncertainties
         self.mask = ((self.grism.data['DQ'] > 0) | 
                      (self.grism.data['ERR'] == 0) | 
@@ -2702,25 +3423,32 @@ class BeamCutout(object):
         self.ivar = 1/self.grism.data['ERR']**2
         self.ivar[self.mask] = 0
         
-        self.beam.scale = scale
-             
+        self.thumbs = {}
+        
         #self.compute_model = self.beam.compute_model
-        self.model = self.beam.model
-        self.modelf = self.model.flatten()
+        #self.model = self.beam.model
+        self.modelf = self.beam.modelf #.flatten()
+        self.model = self.beam.modelf.reshape(self.beam.sh_beam)
+        
+        # Attributes
+        self.size = self.modelf.size
+        self.wave = self.beam.lam
+        self.sh = self.beam.sh_beam
         
         ### Initialize for fits
-        self.flat_flam = self.compute_model(in_place=False)
+        self.flat_flam = self.compute_model(in_place=False, is_cgs=True) #/self.beam.total_flux
         
         ### OK data where the 2D model has non-zero flux
         self.fit_mask = (~self.mask.flatten()) & (self.ivar.flatten() != 0)
-        self.fit_mask &= (self.flat_flam > 0.01*self.flat_flam.max())
+        self.fit_mask &= (self.flat_flam > min_mask*self.flat_flam.max())
         #self.fit_mask &= (self.flat_flam > 3*self.contam.flatten())
             
         ### Flat versions of sci/ivar arrays
         self.scif = (self.grism.data['SCI'] - self.contam).flatten()
         self.ivarf = self.ivar.flatten()
+        self.wavef = np.dot(np.ones((self.sh[0],1)), self.wave[None,:]).flatten()
         
-        ### Mask large residuals
+        ### Mask large residuals where throughput is low
         resid = np.abs(self.scif - self.flat_flam)*np.sqrt(self.ivarf)
         bad_resid = (self.flat_flam < 0.05*self.flat_flam.max()) & (resid > 5)
         self.fit_mask *= ~bad_resid
@@ -2765,10 +3493,18 @@ class BeamCutout(object):
                            segmentation=beam.seg*1, origin=beam.origin,
                            pad=beam.pad, grow=beam.grow,
                            beam=beam.beam, conf=conf, xcenter=beam.xcenter,
-                           ycenter=beam.ycenter, fwcpos=flt.grism.fwcpos)
+                           ycenter=beam.ycenter, fwcpos=flt.grism.fwcpos,
+                           MW_EBV=flt.grism.MW_EBV)
         
-        self.beam.compute_model(spectrum_1d = beam.spectrum_1d)
-        
+        if hasattr(beam, 'psf_params'):
+            self.beam.x_init_epsf(psf_params=beam.psf_params, psf_filter=beam.psf_filter, yoff=beam.psf_yoff)
+            
+        if beam.spectrum_1d is None:
+            self.compute_model()#spectrum_1d=beam.spectrum_1d)
+        else:
+            self.compute_model(spectrum_1d=beam.spectrum_1d,
+                                    is_cgs=beam.is_cgs)
+            
         slx_thumb = slice(self.beam.origin[1], 
                           self.beam.origin[1]+self.beam.sh[1])
                           
@@ -2785,7 +3521,7 @@ class BeamCutout(object):
         if self.beam.id in flt.object_dispersers:
             self.contam -= self.beam.model
         
-    def load_fits(self, file, conf=None):
+    def load_fits(self, file, conf=None, direct_extn=1, grism_extn=2):
         """Initialize from FITS file
         
         Parameters
@@ -2797,14 +3533,20 @@ class BeamCutout(object):
         -------
         Loads attributes to `self`.
         """        
-        hdu = pyfits.open(file)
-        
-        self.direct = ImageData(hdulist=hdu, sci_extn=1)
-        self.grism  = ImageData(hdulist=hdu, sci_extn=2)
+        if isinstance(file, str):
+            hdu = pyfits.open(file)
+        else:
+            hdu = file
+            
+        self.direct = ImageData(hdulist=hdu, sci_extn=direct_extn)
+        self.grism  = ImageData(hdulist=hdu, sci_extn=grism_extn)
         
         self.contam = hdu['CONTAM'].data*1
-        self.model = hdu['MODEL'].data*1
-        
+        try:
+            self.modelf = hdu['MODEL'].data.flatten()*1
+        except:
+            self.modelf = self.grism['SCI'].flatten()*0.
+            
         if ('REF',1) in hdu:
             direct = hdu['REF', 1].data*1
         else:
@@ -2819,7 +3561,7 @@ class BeamCutout(object):
         # #
         if 'DFILTER' in self.grism.header:
             direct_filter = self.grism.header['DFILTER']
-        elif self.grism.pupil is not None:
+        elif self.grism.instrument in ['NIRCAM','NIRISS']:
             direct_filter = self.grism.pupil
         else:
             direct_filter = self.direct.filter
@@ -2827,7 +3569,8 @@ class BeamCutout(object):
         if conf is None:
             conf_file = grismconf.get_config_filename(self.direct.instrument,
                                                       direct_filter,
-                                                      self.grism.filter)
+                                                      self.grism.filter,
+                                                      chip=self.grism.ccdchip)
         
             conf = grismconf.load_grism_config(conf_file)
         
@@ -2835,11 +3578,21 @@ class BeamCutout(object):
             grow = self.grism.header['GROW']
         else:
             grow = 1
-        
+
+        if 'MW_EBV' in h0:
+            self.grism.MW_EBV = h0['MW_EBV']
+        else:
+            self.grism.MW_EBV = 0
+            
         self.grism.fwcpos = h0['FWCPOS']
         if (self.grism.fwcpos == 0) | (self.grism.fwcpos == ''):
             self.grism.fwcpos = None
-            
+        
+        if 'TYOFFSET' in h0:
+            yoffset = h0['TYOFFSET']
+        else:
+            yoffset = 0.
+                 
         self.beam = GrismDisperser(id=h0['ID'], direct=direct, 
                                    segmentation=hdu['SEG'].data*1,
                                    origin=self.direct.origin,
@@ -2847,13 +3600,16 @@ class BeamCutout(object):
                                    grow=grow, beam=h0['BEAM'], 
                                    xcenter=h0['XCENTER'],
                                    ycenter=h0['YCENTER'],
-                                   conf=conf, fwcpos=self.grism.fwcpos)
+                                   conf=conf, fwcpos=self.grism.fwcpos,
+                                   MW_EBV=self.grism.MW_EBV, 
+                                   yoffset=yoffset)
         
         self.grism.parent_file = h0['GPARENT']
         self.direct.parent_file = h0['DPARENT']
         self.id = h0['ID']
+        self.modelf = self.beam.modelf
         
-    def write_fits(self, root='beam_', clobber=True):
+    def write_fits(self, root='beam_', clobber=True, strip=False, get_hdu=False):
         """Write attributes and data to FITS file
         
         Parameters
@@ -2867,6 +3623,24 @@ class BeamCutout(object):
         
         clobber : bool
             Overwrite existing file.
+        
+        strip : bool
+            Strip out extensions that aren't totally necessary for
+            regenerating the `ImageData` object.  That is, strip out the 
+            direct image `SCI`, `ERR`, and `DQ` extensions if `REF` is 
+            defined.  Also strip out `MODEL`.
+            
+        get_hdu : bool
+            Return `~astropy.io.fits.HDUList` rather than writing a file.
+        
+        Returns
+        -------
+        hdu : `~astropy.io.fits.HDUList`
+            If `get_hdu` is True
+        
+        outfile : str
+            If `get_hdu` is False, return the output filename.
+            
         """
         h0 = pyfits.Header()
         h0['ID'] = self.beam.id, 'Object ID'
@@ -2875,8 +3649,12 @@ class BeamCutout(object):
         h0['XCENTER'] = (self.beam.xcenter, 
                          'Offset of centroid wrt thumb center')
         h0['YCENTER'] = (self.beam.ycenter, 
-                         'Offset of centroid wrt thumb center')
-                         
+                         'Offset of centroid wrt thumb center')        
+        
+        if hasattr(self.beam, 'yoffset'):
+            h0['TYOFFSET'] = (self.beam.yoffset, 
+                         'Cross dispersion offset of the trace')
+        
         h0['GPARENT'] = (self.grism.parent_file, 
                          'Parent grism file')
         
@@ -2885,6 +3663,9 @@ class BeamCutout(object):
         
         h0['FWCPOS'] = (self.grism.fwcpos, 
                          'Filter wheel position (NIRISS)')
+        
+        h0['MW_EBV'] = (self.grism.MW_EBV, 
+                         'Milky Way exctinction E(B-V)')
         
         hdu = pyfits.HDUList([pyfits.PrimaryHDU(header=h0)])
         hdu.extend(self.direct.get_HDUList(extver=1))
@@ -2898,6 +3679,29 @@ class BeamCutout(object):
         hdu.append(pyfits.ImageHDU(data=self.model, header=hdu[-1].header,
                                    name='MODEL'))
         
+        if strip:
+            # Blotted reference is attached, don't need individual direct 
+            # arrays.
+            if self.direct['REF'] is not None:
+                for ext in [('SCI',1), ('ERR',1) , ('DQ',1)]:
+                    if ext in hdu:
+                        ix = hdu.index_of(ext)
+                        p = hdu.pop(ix)
+            
+            # This can be regenerated    
+            ix = hdu.index_of('MODEL')
+            p = hdu.pop(ix)
+            
+            # Put Primary keywords in first extension
+            SKIP_KEYS = ['EXTEND', 'SIMPLE']
+            for key in h0:
+                if key not in SKIP_KEYS:
+                    hdu[1].header[key] = (h0[key], h0.comments[key])
+                    hdu['SCI',2].header[key] = (h0[key], h0.comments[key])
+                
+        if get_hdu:
+            return hdu
+            
         outfile = '{0}_{1:05d}.{2}.{3}.fits'.format(root, self.beam.id,
                                          self.grism.filter.lower(),
                                          self.beam.beam)
@@ -2906,14 +3710,26 @@ class BeamCutout(object):
         
         return outfile
         
-    def compute_model(self, *args, **kwargs):
+    def compute_model(self, use_psf=True, **kwargs):
         """Link to `self.beam.compute_model`
         
         `self.beam` is a `GrismDisperser` object.
         """
-        result = self.beam.compute_model(*args, **kwargs)
-        return result
+        if use_psf & hasattr(self.beam, 'psf'):
+            result = self.beam.compute_model_psf(**kwargs)
+        else:
+            result = self.beam.compute_model(**kwargs)
         
+        reset = True
+        if 'in_place' in kwargs:
+            reset = kwargs['in_place']
+                
+        if reset:
+            self.modelf = self.beam.modelf #.flatten()
+            self.model = self.beam.modelf.reshape(self.beam.sh_beam)
+                
+        return result
+                
     def get_wavelength_wcs(self, wavelength=1.3e4):
         """Compute *celestial* WCS of the 2D spectrum array for a specified central wavelength
         
@@ -2946,8 +3762,7 @@ class BeamCutout(object):
         dl = np.interp(wavelength, self.beam.lam_beam[1:],
                                    np.diff(self.beam.lam_beam))
                                    
-        ysens = np.interp(wavelength, self.beam.lam_beam,
-                                      self.beam.sensitivity_beam)
+        ysens = np.interp(wavelength, self.beam.lam_beam, self.beam.sensitivity_beam)
                 
         ### Update CRPIX
         dc = 0 # python array center to WCS pixel center
@@ -3043,6 +3858,87 @@ class BeamCutout(object):
         
         return hdu, wcs
     
+    def full_2d_wcs(self, data=None):
+        """Get trace WCS of the 2D spectrum
+        
+        Parameters
+        ----------
+        data : array-like
+            Put this data in the output HDU rather than empty zeros
+        
+        Returns
+        -------
+        hdu : `~astropy.io.fits.ImageHDU`
+            Image HDU with header and data properties.
+        
+        wcs : `~astropy.wcs.WCS`
+            WCS appropriate for the 2D spectrum with spatial (y) and spectral
+            (x) axes.
+            
+            .. note:: 
+                Assumes linear dispersion and trace functions!
+            
+        """
+        h = pyfits.Header()
+        h['CRPIX1'] = self.beam.sh_beam[0]/2 - self.beam.xcenter
+        h['CRPIX2'] = self.beam.sh_beam[0]/2 - self.beam.ycenter
+        h['CRVAL1'] = self.beam.lam_beam[0]/1.e4        
+        h['CD1_1'] = (self.beam.lam_beam[1] - self.beam.lam_beam[0])/1.e4
+        h['CD1_2'] = 0.
+        
+        h['CRVAL2'] = -1*self.beam.ytrace_beam[0]
+        h['CD2_2'] = 1.
+        h['CD2_1'] = -(self.beam.ytrace_beam[1] - self.beam.ytrace_beam[0])
+        
+        h['CTYPE1'] = 'RA---TAN-SIP'
+        h['CUNIT1'] = 'mas'
+        h['CTYPE2'] = 'DEC--TAN-SIP'
+        h['CUNIT2'] = 'mas'
+
+        #wcs_header = grizli.utils.to_header(self.grism.wcs)
+        
+        x = np.arange(len(self.beam.lam_beam))
+        c = np.polyfit(x, self.beam.lam_beam/1.e4, 2)
+        #c = np.polyfit((self.beam.lam_beam-self.beam.lam_beam[0])/1.e4, x/h['CD1_1'], 2)
+        
+        ct = np.polyfit(x, self.beam.ytrace_beam, 2)
+        
+        h['A_ORDER'] = 2
+        h['B_ORDER'] = 2
+        
+        h['A_0_2'] = 0.
+        h['A_1_2'] = 0.
+        h['A_2_2'] = 0.
+        h['A_2_1'] = 0.
+        h['A_2_0'] = c[0]#/c[1]
+        h['CD1_1'] = c[1]
+        
+        h['B_0_2'] = 0.
+        h['B_1_2'] = 0.
+        h['B_2_2'] = 0.
+        h['B_2_1'] = 0.
+        if ct[1] != 0:
+            h['B_2_0'] = ct[0]#/ct[1]
+        else:
+            h['B_2_0'] = 0
+
+        #h['B_2_0'] = 0
+            
+        if data is None:
+            data = np.zeros(self.beam.sh_beam, dtype=np.float32)
+        
+        hdu = pyfits.ImageHDU(data=data, header=h)
+        wcs = pywcs.WCS(hdu.header)
+        
+        # xf = x + h['CRPIX1']-1
+        # coo = np.array([xf, xf*0])
+        # tr = wcs.all_pix2world(coo.T, 0)
+        
+        #wcs.pscale = np.sqrt(wcs.wcs.cd[0,0]**2 + wcs.wcs.cd[1,0]**2)*3600.
+        wcs.pscale = utils.get_wcs_pscale(wcs)
+        
+        return hdu, wcs
+        
     def get_sky_coords(self):
         """Get WCS coordinates of the center of the direct image
         
@@ -3060,7 +3956,7 @@ class BeamCutout(object):
         ra, dec = self.direct.wcs.all_pix2world(pix_center, 1)[0]
         return ra, dec
     
-    def get_dispersion_PA(self, decimals=1):
+    def get_dispersion_PA(self, decimals=0):
         """Compute exact PA of the dispersion axis, including tilt of the 
         trace and the FLT WCS
         
@@ -3087,7 +3983,6 @@ class BeamCutout(object):
                 
         ### Distorted WCS
         crpix = self.direct.wcs.wcs.crpix
-        
         xref = [crpix[0], crpix[0]+1]
         yref = [crpix[1], crpix[1]]
         r, d = self.direct.wcs.all_pix2world(xref, yref, 1)
@@ -3101,7 +3996,7 @@ class BeamCutout(object):
             
         return dispersion_PA
     
-    def init_epsf(self, center=None, tol=1.e-3, yoff=0.):
+    def init_epsf(self, center=None, tol=1.e-3, yoff=0., skip=1., flat_sensitivity=False, psf_params=None, N=4, get_extended=False):
         """Initialize ePSF fitting for point sources
         TBD
         """
@@ -3112,96 +4007,121 @@ class BeamCutout(object):
         ivar[~np.isfinite(ivar)] = 0
         ivar[self.direct['DQ'] > 0] = 0
         
+        ivar[self.beam.seg != self.id] = 0
+        
+        if ivar.max() == 0:
+            ivar = ivar+1.
+            
         origin = np.array(self.direct.origin) - np.array(self.direct.pad)
-        self.psf, self.psf_params = EPSF.fit_ePSF(self.direct['SCI'], 
+        if psf_params is None:
+            self.psf_params = EPSF.fit_ePSF(self.direct['SCI'], 
                                                   ivar=ivar, 
                                                   center=center, tol=tol,
-                                                  N=12,
-                                                  origin=origin,
-                                                  filter=self.direct.filter)
-        
-        self.psf_resid = self.direct['SCI'] - self.psf
-        
-        # Center in detector coords
-        xd = self.psf_params[1] + self.direct.origin[1] - self.direct.pad
-        yd = self.psf_params[2] + self.direct.origin[0] - self.direct.pad
-
-        # Get wavelength array
-        psf_xy_lam = []
-        for i, filter in enumerate(['F105W', 'F125W', 'F160W']):
-            psf_xy_lam.append(EPSF.get_at_position(x=xd, y=yd, filter=filter))
-        
-        filt_ix = np.arange(3)
-        filt_lam = np.array([1.0551, 1.2486, 1.5369])*1.e4
-        
-        yp_beam, xp_beam = np.indices(self.beam.sh_beam)
-        skip = 1
-        xarr = np.arange(0,self.beam.lam_beam.shape[0], skip)
-        xbeam = np.arange(self.beam.lam_beam.shape[0])*1.
-
-        #yoff = 0 #-0.15
-        psf_model = self.model*0.
-        A_psf = []
-        lam_psf = []
-        
-        lam_offset = self.beam.sh[1]/2 - self.psf_params[1] - 1
-        #lam_offset = 0
-        self.lam_offset = lam_offset
-        
-        for xi in xarr:
-            yi = np.interp(xi, xbeam, self.beam.ytrace_beam)
-            li = np.interp(xi, xbeam, self.beam.lam_beam) #+ lam_offset*np.diff(self.beam.lam_beam)[0]
-            si = np.interp(xi, xbeam, self.beam.sensitivity_beam)
-            dx = xp_beam-self.psf_params[1]-xi
-            dy = yp_beam-self.psf_params[2]-yi+yoff
-
-            # wavelength-dependent
-            ii = np.interp(li, filt_lam, filt_ix, left=-1, right=10)
-            if ii == -1:
-                psf_xy_i = psf_xy_lam[0]*1
-            elif ii == 10:
-                psf_xy_i = psf_xy_lam[2]*1
-            else:
-                ni = int(ii)
-                f = 1-(li-filt_lam[ni])/(filt_lam[ni+1]-filt_lam[ni])
-                psf_xy_i = f*psf_xy_lam[ni] + (1-f)*psf_xy_lam[ni+1]
-
-            psf = EPSF.eval_ePSF(psf_xy_i, dx, dy)*self.psf_params[0]
+                                                  N=N, origin=origin,
+                                                  filter=self.direct.filter,
+                                                  get_extended=get_extended,
+                                                  only_centering=False)
+        else:
+            self.psf_params = psf_params
             
-            #psf += self.psf_resid
-            
-            psf *= si*self.direct.photflam/1.e-17 #/psf.sum()
-            
-            A_psf.append(psf.flatten())
-            lam_psf.append(li)
-            psf_model += psf
-            
-        self.A_psf = scipy.sparse.csr_matrix(np.array(A_psf).T)
-        self.lam_psf = np.array(lam_psf)
+        self.beam.x_init_epsf(flat_sensitivity=False, psf_params=self.psf_params, psf_filter=self.direct.filter, yoff=yoff, skip=skip, get_extended=get_extended)
+        
+        self._parse_from_data(contam_sn_mask=self.contam_sn_mask,
+                              min_mask=self.min_mask)
+        
+        return None
+        
+        # self.psf = EPSF.get_ePSF(self.psf_params, origin=origin, shape=self.beam.sh, filter=self.direct.filter)
+        # 
+        # self.psf_resid = self.direct['SCI'] - self.psf
+        # 
+        # y0, x0 = np.array(self.beam.sh)/2.-1
+        # 
+        # # Center in detector coords
+        # xd = self.psf_params[1] + self.direct.origin[1] - self.direct.pad + x0
+        # yd = self.psf_params[2] + self.direct.origin[0] - self.direct.pad + y0
+        # 
+        # # Get wavelength array
+        # psf_xy_lam = []
+        # for i, filter in enumerate(['F105W', 'F125W', 'F160W']):
+        #     psf_xy_lam.append(EPSF.get_at_position(x=xd, y=yd, filter=filter))
+        # 
+        # filt_ix = np.arange(3)
+        # filt_lam = np.array([1.0551, 1.2486, 1.5369])*1.e4
+        # 
+        # yp_beam, xp_beam = np.indices(self.beam.sh_beam)
+        # #skip = 1
+        # xarr = np.arange(0,self.beam.lam_beam.shape[0], skip)
+        # xarr = xarr[xarr <= self.beam.lam_beam.shape[0]-1]
+        # xbeam = np.arange(self.beam.lam_beam.shape[0])*1.
+        # 
+        # #yoff = 0 #-0.15
+        # psf_model = self.model*0.
+        # A_psf = []
+        # lam_psf = []
+        # 
+        # lam_offset = self.beam.sh[1]/2 - self.psf_params[1] - 1
+        # self.lam_offset = lam_offset
+        # 
+        # for xi in xarr:
+        #     yi = np.interp(xi, xbeam, self.beam.ytrace_beam)
+        #     li = np.interp(xi, xbeam, self.beam.lam_beam) 
+        #     dx = xp_beam-self.psf_params[1]-xi-x0
+        #     dy = yp_beam-self.psf_params[2]-yi+yoff-y0
+        # 
+        #     # wavelength-dependent
+        #     ii = np.interp(li, filt_lam, filt_ix, left=-1, right=10)
+        #     if ii == -1:
+        #         psf_xy_i = psf_xy_lam[0]*1
+        #     elif ii == 10:
+        #         psf_xy_i = psf_xy_lam[2]*1
+        #     else:
+        #         ni = int(ii)
+        #         f = 1-(li-filt_lam[ni])/(filt_lam[ni+1]-filt_lam[ni])
+        #         psf_xy_i = f*psf_xy_lam[ni] + (1-f)*psf_xy_lam[ni+1]
+        # 
+        #     psf = EPSF.eval_ePSF(psf_xy_i, dx, dy)*self.psf_params[0]
+        #     
+        #     A_psf.append(psf.flatten())
+        #     lam_psf.append(li)
+        # 
+        # # Sensitivity
+        # self.lam_psf = np.array(lam_psf)
+        # if flat_sensitivity:
+        #     s_i_scale = np.abs(np.gradient(self.lam_psf))*self.direct.photflam
+        # else:
+        #     sens = self.beam.conf.sens[self.beam.beam]
+        #     so = np.argsort(self.lam_psf)
+        #     s_i = interp.interp_conserve_c(self.lam_psf[so], sens['WAVELENGTH'], sens['SENSITIVITY'])*np.gradient(self.lam_psf[so])*self.direct.photflam
+        #     s_i_scale = s_i*0.
+        #     s_i_scale[so] = s_i
+        #         
+        # self.A_psf = scipy.sparse.csr_matrix(np.array(A_psf).T*s_i_scale)
                 
-    def compute_model_psf(self, id=None, spectrum_1d=None, in_place=True):
-        if spectrum_1d is None:
-            model = np.array(self.A_psf.sum(axis=1))
-            model = model.reshape(self.beam.sh_beam)
-        else:
-            dx = np.diff(self.lam_psf)[0]
-            if dx < 0:
-                coeffs = interp.interp_conserve_c(self.lam_psf[::-1],
-                                                  spectrum_1d[0], 
-                                                  spectrum_1d[1])[::-1]
-            else:
-                coeffs = interp.interp_conserve_c(self.lam_psf,
-                                                  spectrum_1d[0], 
-                                                  spectrum_1d[1])
-                     
-        
-            model = self.A_psf.dot(coeffs).reshape(self.beam.sh_beam)
-        
-        if in_place:
-            self.model = model
-            return True
-        else:
-            return model.flatten()
+    # def xcompute_model_psf(self, id=None, spectrum_1d=None, in_place=True, is_cgs=True):
+    #     if spectrum_1d is None:
+    #         model = np.array(self.A_psf.sum(axis=1))
+    #         model = model.reshape(self.beam.sh_beam)
+    #     else:
+    #         dx = np.diff(self.lam_psf)[0]
+    #         if dx < 0:
+    #             coeffs = interp.interp_conserve_c(self.lam_psf[::-1],
+    #                                               spectrum_1d[0], 
+    #                                               spectrum_1d[1])[::-1]
+    #         else:
+    #             coeffs = interp.interp_conserve_c(self.lam_psf,
+    #                                               spectrum_1d[0], 
+    #                                               spectrum_1d[1])
+    #                  
+    #     
+    #         model = self.A_psf.dot(coeffs).reshape(self.beam.sh_beam)
+    #     
+    #     if in_place:
+    #         self.model = model
+    #         self.beam.model = self.model
+    #         return True
+    #     else:
+    #         return model.flatten()
                   
     ####### Below here will be cut out after verifying that the demos 
     ####### can be run with the new fitting tools    
@@ -3256,295 +4176,295 @@ class BeamCutout(object):
         
         self.DoF = self.fit_mask.sum()
         
-    def load_templates(self, fwhm=400, line_complexes=True):
-        """TBD 
-        
-        *** 
-            These below will probably be cut since they're all now implemented
-            in more detail in multifit.py.  Need to update demos before
-            taking them out completely.
-        ***
-        
-        """
-        # templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed1_nolines.dat',
-        # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed2_nolines.dat',  
-        # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',     
-        # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed4_nolines.dat',     
-        # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed5_nolines.dat',     
-        # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed6_nolines.dat',     
-        # 'templates/cvd12_t11_solar_Chabrier.extend.dat',     
-        # 'templates/dobos11/bc03_pr_ch_z02_ltau07.0_age09.2_av2.5.dat']
-    
-        templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',  
-                     'templates/cvd12_t11_solar_Chabrier.extend.dat']     
-        
-        temp_list = OrderedDict()
-        for temp in templates:
-            data = np.loadtxt(os.getenv('GRIZLI') + '/' + temp, unpack=True)
-            scl = np.interp(5500., data[0], data[1])
-            name = os.path.basename(temp)
-            temp_list[name] = utils.SpectrumTemplate(wave=data[0],
-                                                             flux=data[1]/scl)
-            #plt.plot(temp_list[-1].wave, temp_list[-1].flux, label=temp, alpha=0.5)
-            
-        line_wavelengths = {} ; line_ratios = {}
-        line_wavelengths['Ha'] = [6564.61]; line_ratios['Ha'] = [1.]
-        line_wavelengths['Hb'] = [4862.68]; line_ratios['Hb'] = [1.]
-        line_wavelengths['Hg'] = [4341.68]; line_ratios['Hg'] = [1.]
-        line_wavelengths['Hd'] = [4102.892]; line_ratios['Hd'] = [1.]
-        line_wavelengths['OIIIx'] = [4364.436]; line_ratios['OIIIx'] = [1.]
-        line_wavelengths['OIII'] = [5008.240, 4960.295]; line_ratios['OIII'] = [2.98, 1]
-        line_wavelengths['OIII+Hb'] = [5008.240, 4960.295, 4862.68]; line_ratios['OIII+Hb'] = [2.98, 1, 3.98/8.]
-        
-        line_wavelengths['OIII+Hb+Ha'] = [5008.240, 4960.295, 4862.68, 6564.61]; line_ratios['OIII+Hb+Ha'] = [2.98, 1, 3.98/10., 3.98/10.*2.86]
-    
-        line_wavelengths['OIII+Hb+Ha+SII'] = [5008.240, 4960.295, 4862.68, 6564.61, 6718.29, 6732.67]
-        line_ratios['OIII+Hb+Ha+SII'] = [2.98, 1, 3.98/10., 3.98/10.*2.86*4, 3.98/10.*2.86/10.*4, 3.98/10.*2.86/10.*4]
-    
-        line_wavelengths['OII'] = [3729.875]; line_ratios['OII'] = [1]
-        line_wavelengths['OI'] = [6302.046]; line_ratios['OI'] = [1]
-    
-        line_wavelengths['Ha+SII'] = [6564.61, 6718.29, 6732.67]; line_ratios['Ha+SII'] = [1., 1./10, 1./10]
-        line_wavelengths['SII'] = [6718.29, 6732.67]; line_ratios['SII'] = [1., 1.]
-        
-        if line_complexes:
-            #line_list = ['Ha+SII', 'OIII+Hb+Ha', 'OII']
-            line_list = ['Ha+SII', 'OIII+Hb', 'OII']
-        else:
-            line_list = ['Ha', 'SII', 'OIII', 'Hb', 'OII']
-            #line_list = ['Ha', 'SII']
-            
-        for line in line_list:
-            scl = line_ratios[line]/np.sum(line_ratios[line])
-            for i in range(len(scl)):
-                line_i = utils.SpectrumTemplate(wave=line_wavelengths[line][i], 
-                                          flux=None, fwhm=fwhm, velocity=True)
-                                          
-                if i == 0:
-                    line_temp = line_i*scl[i]
-                else:
-                    line_temp = line_temp + line_i*scl[i]
-            
-            temp_list['line {0}'.format(line)] = line_temp
-                                     
-        return temp_list
-                      
-    def fit_at_z(self, z=0., templates={}, fitter='lstsq', poly_order=3):
-        """TBD
-        """
-        import copy
-        
-        import sklearn.linear_model
-        import numpy.linalg
-        
-        self.init_poly_coeffs(poly_order=poly_order)
-        
-        NTEMP = len(self.A_poly)
-        A_list = copy.copy(self.A_poly)
-        ok_temp = np.ones(NTEMP+len(templates), dtype=bool)
-        
-        for i, key in enumerate(templates.keys()):
-            NTEMP += 1
-            temp = templates[key].zscale(z, 1.)
-            spectrum_1d = [temp.wave, temp.flux]
-            
-            if ((temp.wave[0] > self.beam.lam_beam[-1]) | 
-                (temp.wave[-1] < self.beam.lam_beam[0])):
-                
-                A_list.append(self.flat_flam*1)
-                ok_temp[NTEMP-1] = False
-                #print 'skip TEMP: %d, %s' %(i, key)
-                continue
-            else:
-                pass
-                #print 'TEMP: %d' %(i)
-                
-            temp_model = self.compute_model(spectrum_1d=spectrum_1d, 
-                                            in_place=False)
-            
-            ### Test that model spectrum has non-zero pixel values
-            #print 'TEMP: %d, %.3f' %(i, temp_model[self.fit_mask].max()/temp_model.max())
-            if temp_model[self.fit_mask].max()/temp_model.max() < 0.2:
-                #print 'skipx TEMP: %d, %s' %(i, key)
-                ok_temp[NTEMP-1] = False
-                                            
-            A_list.append(temp_model)
-        
-        A = np.vstack(A_list).T
-        out_coeffs = np.zeros(NTEMP)
-        
-        ### LSTSQ coefficients
-        if fitter == 'lstsq':
-            out = numpy.linalg.lstsq(A[self.fit_mask, :][:, ok_temp],
-                                     self.scif[self.fit_mask])
-            lstsq_coeff, residuals, rank, s = out
-            coeffs = lstsq_coeff
-        else:
-            clf = sklearn.linear_model.LinearRegression()
-            status = clf.fit(A[self.fit_mask, :][:, ok_temp],
-                             self.scif[self.fit_mask])
-            coeffs = clf.coef_
-        
-        out_coeffs[ok_temp] = coeffs
-        model = np.dot(A, out_coeffs)
-        model_2d = model.reshape(self.beam.sh_beam)
-    
-        chi2 = np.sum(((self.scif - model)**2*self.ivarf)[self.fit_mask])
-        
-        return A, out_coeffs, chi2, model_2d
-    
-    def fit_redshift(self, prior=None, poly_order=1, fwhm=500,
-                     make_figure=True, zr=None, dz=None, verbose=True):
-        """TBD
-        """
-        # if False:
-        #     reload(grizlidev.utils); utils = grizlidev.utils
-        #     reload(grizlidev.utils_c); reload(grizlidev.model); 
-        #     reload(grizlidev.grismconf); reload(grizlidev.utils); reload(grizlidev.multifit); reload(grizlidev); reload(grizli)
-        # 
-        #     beams = []
-        #     if id in flt.object_dispersers:
-        #         b = flt.object_dispersers[id]['A']
-        #         beam = grizli.model.BeamCutout(flt, b, conf=flt.conf)
-        #         #print beam.grism.pad, beam.beam.grow
-        #         beams.append(beam)
-        #     else:
-        #         print flt.grism.parent_file, 'ID %d not found' %(id)
-        # 
-        #     #plt.imshow(beam.beam.direct*(beam.beam.seg == id), interpolation='Nearest', origin='lower', cmap='viridis_r')
-        #     self = beam
-        # 
-        #     #poly_order = 3
-        
-        if self.grism.filter == 'G102':
-            if zr is None:
-                zr = [0.78e4/6563.-1, 1.2e4/5007.-1]
-            if dz is None:
-                dz = [0.001, 0.0005]
-        
-        if self.grism.filter == 'G141':
-            if zr is None:
-                zr = [1.1e4/6563.-1, 1.65e4/5007.-1]
-            if dz is None:
-                dz = [0.003, 0.0005]
-        
-        zgrid = utils.log_zgrid(zr, dz=dz[0])
-        NZ = len(zgrid)
-        
-        templates = self.load_templates(fwhm=fwhm)
-        NTEMP = len(templates)
-        
-        out = self.fit_at_z(z=0., templates=templates, fitter='lstsq',
-                            poly_order=poly_order)
-                            
-        A, coeffs, chi2, model_2d = out
-        
-        chi2 = np.zeros(NZ)
-        coeffs = np.zeros((NZ, coeffs.shape[0]))
-        
-        for i in range(NZ):
-            out = self.fit_at_z(z=zgrid[i], templates=templates,
-                                fitter='lstsq', poly_order=poly_order)
-            
-            A, coeffs[i,:], chi2[i], model_2d = out
-            if verbose:
-                print(utils.no_newline + '{0:.4f} {1:9.1f}'.format(zgrid[i], chi2[i]))
-        
-        # peaks
-        import peakutils
-        chi2nu = (chi2.min()-chi2)/self.DoF
-        indexes = peakutils.indexes((chi2nu+0.01)*(chi2nu > -0.004), thres=0.003, min_dist=20)
-        num_peaks = len(indexes)
-        # plt.plot(zgrid, (chi2-chi2.min())/ self.DoF)
-        # plt.scatter(zgrid[indexes], (chi2-chi2.min())[indexes]/ self.DoF, color='r')
-        
-        
-        ### zoom
-        if ((chi2.max()-chi2.min())/self.DoF > 0.01) & (num_peaks < 5):
-            threshold = 0.01
-        else:
-            threshold = 0.001
-        
-        zgrid_zoom = utils.zoom_zgrid(zgrid, chi2/self.DoF, threshold=threshold, factor=10)
-        NZOOM = len(zgrid_zoom)
-        
-        chi2_zoom = np.zeros(NZOOM)
-        coeffs_zoom = np.zeros((NZOOM, coeffs.shape[1]))
-    
-        for i in range(NZOOM):
-            out = self.fit_at_z(z=zgrid_zoom[i], templates=templates,
-                                fitter='lstsq', poly_order=poly_order)
-    
-            A, coeffs_zoom[i,:], chi2_zoom[i], model_2d = out
-            if verbose:
-                print(utils.no_newline + '- {0:.4f} {1:9.1f}'.format(zgrid_zoom[i], chi2_zoom[i]))
-    
-        zgrid = np.append(zgrid, zgrid_zoom)
-        chi2 = np.append(chi2, chi2_zoom)
-        coeffs = np.append(coeffs, coeffs_zoom, axis=0)
-    
-        so = np.argsort(zgrid)
-        zgrid = zgrid[so]
-        chi2 = chi2[so]
-        coeffs=coeffs[so,:]
-        
-        ### Best redshift
-        templates = self.load_templates(line_complexes=False, fwhm=fwhm)
-        zbest = zgrid[np.argmin(chi2)]
-        out = self.fit_at_z(z=zbest, templates=templates,
-                            fitter='lstsq', poly_order=poly_order)
-        
-        A, coeffs_full, chi2_best, model_full = out
-        
-        ## Continuum fit
-        mask = np.isfinite(coeffs_full)
-        for i, key in enumerate(templates.keys()):
-            if key.startswith('line'):
-                mask[self.n_simp+i] = False
-            
-        model_continuum = np.dot(A, coeffs_full*mask)
-        model_continuum = model_continuum.reshape(self.beam.sh_beam)
-                
-        ### 1D spectrum
-        model1d = utils.SpectrumTemplate(wave=self.beam.lam, 
-                        flux=np.dot(self.y_poly.T, 
-                              coeffs_full[self.n_bg:self.n_poly+self.n_bg]))
-        
-        cont1d = model1d*1
-        
-        line_flux = OrderedDict()
-        for i, key in enumerate(templates.keys()):
-            temp_i = templates[key].zscale(zbest, coeffs_full[self.n_simp+i])
-            model1d += temp_i
-            if not key.startswith('line'):
-                cont1d += temp_i
-            else:
-                line_flux[key.split()[1]] = (coeffs_full[self.n_simp+i] * 
-                                             self.beam.total_flux/1.e-17)
-                
-                        
-        fit_data = OrderedDict()
-        fit_data['poly_order'] = poly_order
-        fit_data['fwhm'] = fwhm
-        fit_data['zbest'] = zbest
-        fit_data['zgrid'] = zgrid
-        fit_data['A'] = A
-        fit_data['coeffs'] = coeffs
-        fit_data['chi2'] = chi2
-        fit_data['model_full'] = model_full
-        fit_data['coeffs_full'] = coeffs_full
-        fit_data['line_flux'] = line_flux
-        #fit_data['templates_full'] = templates
-        fit_data['model_cont'] = model_continuum
-        fit_data['model1d'] = model1d
-        fit_data['cont1d'] = cont1d
-             
-        fig = None   
-        if make_figure:
-            fig = self.show_redshift_fit(fit_data)
-            #fig.savefig('fit.pdf')
-            
-        return fit_data, fig
+    # def load_templates(self, fwhm=400, line_complexes=True):
+    #     """TBD 
+    #     
+    #     *** 
+    #         These below will probably be cut since they're all now implemented
+    #         in more detail in multifit.py.  Need to update demos before
+    #         taking them out completely.
+    #     ***
+    #     
+    #     """
+    #     # templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed1_nolines.dat',
+    #     # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed2_nolines.dat',  
+    #     # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',     
+    #     # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed4_nolines.dat',     
+    #     # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed5_nolines.dat',     
+    #     # 'templates/EAZY_v1.0_lines/eazy_v1.0_sed6_nolines.dat',     
+    #     # 'templates/cvd12_t11_solar_Chabrier.extend.dat',     
+    #     # 'templates/dobos11/bc03_pr_ch_z02_ltau07.0_age09.2_av2.5.dat']
+    # 
+    #     templates = ['templates/EAZY_v1.0_lines/eazy_v1.0_sed3_nolines.dat',  
+    #                  'templates/cvd12_t11_solar_Chabrier.extend.dat']     
+    #     
+    #     temp_list = OrderedDict()
+    #     for temp in templates:
+    #         data = np.loadtxt(GRIZLI_PATH + '/' + temp, unpack=True)
+    #         scl = np.interp(5500., data[0], data[1])
+    #         name = os.path.basename(temp)
+    #         temp_list[name] = utils.SpectrumTemplate(wave=data[0],
+    #                                                          flux=data[1]/scl)
+    #         #plt.plot(temp_list[-1].wave, temp_list[-1].flux, label=temp, alpha=0.5)
+    #         
+    #     line_wavelengths = {} ; line_ratios = {}
+    #     line_wavelengths['Ha'] = [6564.61]; line_ratios['Ha'] = [1.]
+    #     line_wavelengths['Hb'] = [4862.68]; line_ratios['Hb'] = [1.]
+    #     line_wavelengths['Hg'] = [4341.68]; line_ratios['Hg'] = [1.]
+    #     line_wavelengths['Hd'] = [4102.892]; line_ratios['Hd'] = [1.]
+    #     line_wavelengths['OIIIx'] = [4364.436]; line_ratios['OIIIx'] = [1.]
+    #     line_wavelengths['OIII'] = [5008.240, 4960.295]; line_ratios['OIII'] = [2.98, 1]
+    #     line_wavelengths['OIII+Hb'] = [5008.240, 4960.295, 4862.68]; line_ratios['OIII+Hb'] = [2.98, 1, 3.98/8.]
+    #     
+    #     line_wavelengths['OIII+Hb+Ha'] = [5008.240, 4960.295, 4862.68, 6564.61]; line_ratios['OIII+Hb+Ha'] = [2.98, 1, 3.98/10., 3.98/10.*2.86]
+    # 
+    #     line_wavelengths['OIII+Hb+Ha+SII'] = [5008.240, 4960.295, 4862.68, 6564.61, 6718.29, 6732.67]
+    #     line_ratios['OIII+Hb+Ha+SII'] = [2.98, 1, 3.98/10., 3.98/10.*2.86*4, 3.98/10.*2.86/10.*4, 3.98/10.*2.86/10.*4]
+    # 
+    #     line_wavelengths['OII'] = [3729.875]; line_ratios['OII'] = [1]
+    #     line_wavelengths['OI'] = [6302.046]; line_ratios['OI'] = [1]
+    # 
+    #     line_wavelengths['Ha+SII'] = [6564.61, 6718.29, 6732.67]; line_ratios['Ha+SII'] = [1., 1./10, 1./10]
+    #     line_wavelengths['SII'] = [6718.29, 6732.67]; line_ratios['SII'] = [1., 1.]
+    #     
+    #     if line_complexes:
+    #         #line_list = ['Ha+SII', 'OIII+Hb+Ha', 'OII']
+    #         line_list = ['Ha+SII', 'OIII+Hb', 'OII']
+    #     else:
+    #         line_list = ['Ha', 'SII', 'OIII', 'Hb', 'OII']
+    #         #line_list = ['Ha', 'SII']
+    #         
+    #     for line in line_list:
+    #         scl = line_ratios[line]/np.sum(line_ratios[line])
+    #         for i in range(len(scl)):
+    #             line_i = utils.SpectrumTemplate(wave=line_wavelengths[line][i], 
+    #                                       flux=None, fwhm=fwhm, velocity=True)
+    #                                       
+    #             if i == 0:
+    #                 line_temp = line_i*scl[i]
+    #             else:
+    #                 line_temp = line_temp + line_i*scl[i]
+    #         
+    #         temp_list['line {0}'.format(line)] = line_temp
+    #                                  
+    #     return temp_list
+    #                   
+    # def fit_at_z(self, z=0., templates={}, fitter='lstsq', poly_order=3):
+    #     """TBD
+    #     """
+    #     import copy
+    #     
+    #     import sklearn.linear_model
+    #     import numpy.linalg
+    #     
+    #     self.init_poly_coeffs(poly_order=poly_order)
+    #     
+    #     NTEMP = len(self.A_poly)
+    #     A_list = copy.copy(self.A_poly)
+    #     ok_temp = np.ones(NTEMP+len(templates), dtype=bool)
+    #     
+    #     for i, key in enumerate(templates.keys()):
+    #         NTEMP += 1
+    #         temp = templates[key].zscale(z, 1.)
+    #         spectrum_1d = [temp.wave, temp.flux]
+    #         
+    #         if ((temp.wave[0] > self.beam.lam_beam[-1]) | 
+    #             (temp.wave[-1] < self.beam.lam_beam[0])):
+    #             
+    #             A_list.append(self.flat_flam*1)
+    #             ok_temp[NTEMP-1] = False
+    #             #print 'skip TEMP: %d, %s' %(i, key)
+    #             continue
+    #         else:
+    #             pass
+    #             #print 'TEMP: %d' %(i)
+    #             
+    #         temp_model = self.compute_model(spectrum_1d=spectrum_1d, 
+    #                                         in_place=False)
+    #         
+    #         ### Test that model spectrum has non-zero pixel values
+    #         #print 'TEMP: %d, %.3f' %(i, temp_model[self.fit_mask].max()/temp_model.max())
+    #         if temp_model[self.fit_mask].max()/temp_model.max() < 0.2:
+    #             #print 'skipx TEMP: %d, %s' %(i, key)
+    #             ok_temp[NTEMP-1] = False
+    #                                         
+    #         A_list.append(temp_model)
+    #     
+    #     A = np.vstack(A_list).T
+    #     out_coeffs = np.zeros(NTEMP)
+    #     
+    #     ### LSTSQ coefficients
+    #     if fitter == 'lstsq':
+    #         out = numpy.linalg.lstsq(A[self.fit_mask, :][:, ok_temp],
+    #                                  self.scif[self.fit_mask])
+    #         lstsq_coeff, residuals, rank, s = out
+    #         coeffs = lstsq_coeff
+    #     else:
+    #         clf = sklearn.linear_model.LinearRegression()
+    #         status = clf.fit(A[self.fit_mask, :][:, ok_temp],
+    #                          self.scif[self.fit_mask])
+    #         coeffs = clf.coef_
+    #     
+    #     out_coeffs[ok_temp] = coeffs
+    #     model = np.dot(A, out_coeffs)
+    #     model_2d = model.reshape(self.beam.sh_beam)
+    # 
+    #     chi2 = np.sum(((self.scif - model)**2*self.ivarf)[self.fit_mask])
+    #     
+    #     return A, out_coeffs, chi2, model_2d
+    # 
+    # def fit_redshift(self, prior=None, poly_order=1, fwhm=500,
+    #                  make_figure=True, zr=None, dz=None, verbose=True):
+    #     """TBD
+    #     """
+    #     # if False:
+    #     #     reload(grizlidev.utils); utils = grizlidev.utils
+    #     #     reload(grizlidev.utils_c); reload(grizlidev.model); 
+    #     #     reload(grizlidev.grismconf); reload(grizlidev.utils); reload(grizlidev.multifit); reload(grizlidev); reload(grizli)
+    #     # 
+    #     #     beams = []
+    #     #     if id in flt.object_dispersers:
+    #     #         b = flt.object_dispersers[id]['A']
+    #     #         beam = grizli.model.BeamCutout(flt, b, conf=flt.conf)
+    #     #         #print beam.grism.pad, beam.beam.grow
+    #     #         beams.append(beam)
+    #     #     else:
+    #     #         print flt.grism.parent_file, 'ID %d not found' %(id)
+    #     # 
+    #     #     #plt.imshow(beam.beam.direct*(beam.beam.seg == id), interpolation='Nearest', origin='lower', cmap='viridis_r')
+    #     #     self = beam
+    #     # 
+    #     #     #poly_order = 3
+    #     
+    #     if self.grism.filter == 'G102':
+    #         if zr is None:
+    #             zr = [0.78e4/6563.-1, 1.2e4/5007.-1]
+    #         if dz is None:
+    #             dz = [0.001, 0.0005]
+    #     
+    #     if self.grism.filter == 'G141':
+    #         if zr is None:
+    #             zr = [1.1e4/6563.-1, 1.65e4/5007.-1]
+    #         if dz is None:
+    #             dz = [0.003, 0.0005]
+    #     
+    #     zgrid = utils.log_zgrid(zr, dz=dz[0])
+    #     NZ = len(zgrid)
+    #     
+    #     templates = self.load_templates(fwhm=fwhm)
+    #     NTEMP = len(templates)
+    #     
+    #     out = self.fit_at_z(z=0., templates=templates, fitter='lstsq',
+    #                         poly_order=poly_order)
+    #                         
+    #     A, coeffs, chi2, model_2d = out
+    #     
+    #     chi2 = np.zeros(NZ)
+    #     coeffs = np.zeros((NZ, coeffs.shape[0]))
+    #     
+    #     for i in range(NZ):
+    #         out = self.fit_at_z(z=zgrid[i], templates=templates,
+    #                             fitter='lstsq', poly_order=poly_order)
+    #         
+    #         A, coeffs[i,:], chi2[i], model_2d = out
+    #         if verbose:
+    #             print(utils.NO_NEWLINE + '{0:.4f} {1:9.1f}'.format(zgrid[i], chi2[i]))
+    #     
+    #     # peaks
+    #     import peakutils
+    #     chi2nu = (chi2.min()-chi2)/self.DoF
+    #     indexes = peakutils.indexes((chi2nu+0.01)*(chi2nu > -0.004), thres=0.003, min_dist=20)
+    #     num_peaks = len(indexes)
+    #     # plt.plot(zgrid, (chi2-chi2.min())/ self.DoF)
+    #     # plt.scatter(zgrid[indexes], (chi2-chi2.min())[indexes]/ self.DoF, color='r')
+    #     
+    #     
+    #     ### zoom
+    #     if ((chi2.max()-chi2.min())/self.DoF > 0.01) & (num_peaks < 5):
+    #         threshold = 0.01
+    #     else:
+    #         threshold = 0.001
+    #     
+    #     zgrid_zoom = utils.zoom_zgrid(zgrid, chi2/self.DoF, threshold=threshold, factor=10)
+    #     NZOOM = len(zgrid_zoom)
+    #     
+    #     chi2_zoom = np.zeros(NZOOM)
+    #     coeffs_zoom = np.zeros((NZOOM, coeffs.shape[1]))
+    # 
+    #     for i in range(NZOOM):
+    #         out = self.fit_at_z(z=zgrid_zoom[i], templates=templates,
+    #                             fitter='lstsq', poly_order=poly_order)
+    # 
+    #         A, coeffs_zoom[i,:], chi2_zoom[i], model_2d = out
+    #         if verbose:
+    #             print(utils.NO_NEWLINE + '- {0:.4f} {1:9.1f}'.format(zgrid_zoom[i], chi2_zoom[i]))
+    # 
+    #     zgrid = np.append(zgrid, zgrid_zoom)
+    #     chi2 = np.append(chi2, chi2_zoom)
+    #     coeffs = np.append(coeffs, coeffs_zoom, axis=0)
+    # 
+    #     so = np.argsort(zgrid)
+    #     zgrid = zgrid[so]
+    #     chi2 = chi2[so]
+    #     coeffs=coeffs[so,:]
+    #     
+    #     ### Best redshift
+    #     templates = self.load_templates(line_complexes=False, fwhm=fwhm)
+    #     zbest = zgrid[np.argmin(chi2)]
+    #     out = self.fit_at_z(z=zbest, templates=templates,
+    #                         fitter='lstsq', poly_order=poly_order)
+    #     
+    #     A, coeffs_full, chi2_best, model_full = out
+    #     
+    #     ## Continuum fit
+    #     mask = np.isfinite(coeffs_full)
+    #     for i, key in enumerate(templates.keys()):
+    #         if key.startswith('line'):
+    #             mask[self.n_simp+i] = False
+    #         
+    #     model_continuum = np.dot(A, coeffs_full*mask)
+    #     model_continuum = model_continuum.reshape(self.beam.sh_beam)
+    #             
+    #     ### 1D spectrum
+    #     model1d = utils.SpectrumTemplate(wave=self.beam.lam, 
+    #                     flux=np.dot(self.y_poly.T, 
+    #                           coeffs_full[self.n_bg:self.n_poly+self.n_bg]))
+    #     
+    #     cont1d = model1d*1
+    #     
+    #     line_flux = OrderedDict()
+    #     for i, key in enumerate(templates.keys()):
+    #         temp_i = templates[key].zscale(zbest, coeffs_full[self.n_simp+i])
+    #         model1d += temp_i
+    #         if not key.startswith('line'):
+    #             cont1d += temp_i
+    #         else:
+    #             line_flux[key.split()[1]] = (coeffs_full[self.n_simp+i] * 1.)
+    #                                          #self.beam.total_flux/1.e-17)
+    #             
+    #                     
+    #     fit_data = OrderedDict()
+    #     fit_data['poly_order'] = poly_order
+    #     fit_data['fwhm'] = fwhm
+    #     fit_data['zbest'] = zbest
+    #     fit_data['zgrid'] = zgrid
+    #     fit_data['A'] = A
+    #     fit_data['coeffs'] = coeffs
+    #     fit_data['chi2'] = chi2
+    #     fit_data['model_full'] = model_full
+    #     fit_data['coeffs_full'] = coeffs_full
+    #     fit_data['line_flux'] = line_flux
+    #     #fit_data['templates_full'] = templates
+    #     fit_data['model_cont'] = model_continuum
+    #     fit_data['model1d'] = model1d
+    #     fit_data['cont1d'] = cont1d
+    #          
+    #     fig = None   
+    #     if make_figure:
+    #         fig = self.show_redshift_fit(fit_data)
+    #         #fig.savefig('fit.pdf')
+    #         
+    #     return fit_data, fig
         
     def show_redshift_fit(self, fit_data):
         """Make a plot based on results from `simple_line_fit`.
@@ -3735,8 +4655,8 @@ class BeamCutout(object):
         clf = sklearn.linear_model.LinearRegression()
                 
         ### Continuum
-        self.beam.compute_model()
-        self.modelf = self.model.flatten()
+        self.compute_model()
+        self.model = self.modelf.reshape(self.beam.sh_beam)
         
         ### OK data where the 2D model has non-zero flux
         ok_data = (~self.mask.flatten()) & (self.ivar.flatten() != 0)
@@ -3774,7 +4694,7 @@ class BeamCutout(object):
         ### Loop through line models and fit for template coefficients
         ### Compute chi-squared.
         for i in range(N):
-            self.beam.compute_model(spectrum_1d=[waves, gaussian_lines[i,:]])
+            self.compute_model(spectrum_1d=[waves, gaussian_lines[i,:]])
                                                  
             A[:,-1] = self.model.flatten()
             if fitter == 'lstsq':
@@ -3794,7 +4714,7 @@ class BeamCutout(object):
         
         #print chi2
         ix = np.argmin(chi2)
-        self.beam.compute_model(spectrum_1d=[waves, gaussian_lines[ix,:]])
+        self.compute_model(spectrum_1d=[waves, gaussian_lines[ix,:]])
         A[:,-1] = self.model.flatten()
         best_coeffs = coeffs[ix,:]*1
         best_model = np.dot(A, best_coeffs).reshape(self.beam.sh_beam)
@@ -3843,7 +4763,7 @@ class BeamCutout(object):
                                                         - self.contam,
                                                         ivar = self.ivar)
         
-        flat_model = self.beam.compute_model(in_place=False)
+        flat_model = self.compute_model(in_place=False)
         flat_model = flat_model.reshape(self.beam.sh_beam)
         xspecm, yspecm, yerrm = self.beam.optimal_extract(flat_model)
         
