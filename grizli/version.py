@@ -1,5 +1,2 @@
-"""
-Dummy file to hold the latest code version
-"""
-# Should be one commit behind latest
-__version__ = "0.2.1-116-g7038273"
+# git describe --tags
+__version__ = "0.8.0-3-g647e9aa"

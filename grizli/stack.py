@@ -5,6 +5,8 @@ from collections import OrderedDict
 from imp import reload
 
 import astropy.io.fits as pyfits
+import astropy.units as u
+
 import numpy as np
 
 from . import utils
@@ -36,7 +38,7 @@ def make_templates(grism='G141', return_lists=False, fsps_templates=False,
         
     """
     
-    from grizli.multifit import MultiBeam
+    from .multifit import MultiBeam
     
     if grism == 'G141':    # WFC3/IR
         fwhm = 1100
@@ -69,7 +71,7 @@ def make_templates(grism='G141', return_lists=False, fsps_templates=False,
         print('Wrote `templates_{0}.npy`'.format(fwhm))
 
 class StackFitter(GroupFitter):
-    def __init__(self, files='gnt_18197.stack.fits', group_name=None, sys_err=0.02, mask_min=0.1, fit_stacks=True, fcontam=1, pas=None, extensions=None, min_ivar=0.01, overlap_threshold=3, verbose=True, eazyp=None, eazy_ix=0):
+    def __init__(self, files='gnt_18197.stack.fits', group_name=None, sys_err=0.02, mask_min=0.1, fit_stacks=True, fcontam=1, PAs=None, extensions=None, min_ivar=0.01, overlap_threshold=3, verbose=True, eazyp=None, eazy_ix=0, MW_EBV=0., chi2_threshold=1.5, min_DoF=200):
         """Object for fitting stacked spectra.
         
         Parameters
@@ -118,6 +120,10 @@ class StackFitter(GroupFitter):
         self.file = file
         self.hdulist = pyfits.open(file)
         self.min_ivar = min_ivar
+        self.sys_err = sys_err
+        self.fcontam = fcontam
+        
+        self.MW_EBV = MW_EBV
         
         self.h0 = self.hdulist[0].header.copy()
         #self.Ngrism = self.h0['NGRISM']
@@ -137,8 +143,8 @@ class StackFitter(GroupFitter):
                 for j in range(ng):
                     pa = self.h0['{0}{1:02d}'.format(g, j+1)]
                     
-                    if pas is not None:
-                        if pa not in pas:
+                    if PAs is not None:
+                        if pa not in PAs:
                             continue
                     
                     ext = '{0},{1}'.format(g,pa)
@@ -147,7 +153,7 @@ class StackFitter(GroupFitter):
                             continue
                             
                     self.ext.append(ext)
-                
+                        
         self.N = len(self.ext)
         self.beams = []
         pop = []
@@ -155,65 +161,48 @@ class StackFitter(GroupFitter):
             E_i = StackedSpectrum(file=self.file, sys_err=sys_err,
                                   mask_min=mask_min, extver=self.ext[i], 
                                   mask_threshold=-1, fcontam=fcontam, 
-                                  min_ivar=min_ivar)
+                                  min_ivar=min_ivar, MW_EBV=MW_EBV)
             E_i.compute_model()
             
-            if np.isfinite(E_i.kernel.sum()):
+            if np.isfinite(E_i.kernel.sum()) & (E_i.DoF >= min_DoF):
                 self.beams.append(E_i)
             else:
                 pop.append(i)
-        
+            
+            
         for i in pop[::-1]:
             self.N -= 1
             p = self.ext.pop(i)
-                    
-        if not fit_stacks:
-            self.mask_drizzle_overlaps(threshold=overlap_threshold)
-        
+                                    
         # Get some parameters from the beams
         self.id = self.h0['ID']
         self.ra = self.h0['RA']
         self.dec = self.h0['DEC']
         
-        self.Ngrism = {}
-        for grism in self.grisms:
-            self.Ngrism[grism] = 0
-        
-        for beam in self.beams:
-            self.Ngrism[beam.grism] += 1
-                    
-        self.Ntot = np.sum([E.size for E in self.beams])
-        self.scif = np.hstack([E.scif for E in self.beams])
-        self.ivarf = np.hstack([E.ivarf for E in self.beams])
-        self.wavef = np.hstack([E.wavef for E in self.beams])
-
-        self.weightf = np.hstack([E.weightf for E in self.beams])
-        self.ivarf *= self.weightf
-
-        self.sivarf = np.sqrt(self.ivarf)
-
-        self.fit_mask = np.hstack([E.fit_mask for E in self.beams])
-        self.fit_mask &= self.ivarf > min_ivar*self.ivarf.max()
-                
-        self.DoF = int((self.fit_mask*self.weightf).sum())
-        #self.Nmask = self.fit_mask.sum()
-        self.Nmask = np.sum([E.fit_mask.sum() for E in self.beams])
-        
-        self.slices = self._get_slices(masked=False)
-        self.A_bg = self._init_background(masked=False)
-
-        self._update_beam_mask()
-        self.A_bgm = self._init_background(masked=True)
-        
         ## Photometry
         self.is_spec = 1
         self.Nphot = 0
         
+        ## Parse the beam data
+        self._parse_beams_list()
+        
+        if not fit_stacks:
+            # self.mask_drizzle_overlaps(threshold=overlap_threshold,
+            #                           verbose=verbose)
+            if chi2_threshold > 0:
+                orig_ext = [e for e in self.ext]
+                fit_log, keep_dict, has_bad = self.check_for_bad_PAs(poly_order=3, chi2_threshold=chi2_threshold, fit_background=True, reinit=True, verbose=False)
+                if has_bad & verbose:
+                    print('Found bad PA.  New list: {0}'.format(keep_dict))
+        
+        if verbose:
+            print('  {0}'.format(' '.join(self.ext)))
+            
         # Read multiple
         if isinstance(files, list):
             if len(files) > 1:
                 for file in files[1:]:
-                    extra = StackFitter(files=file, sys_err=sys_err, mask_min=mask_min, fit_stacks=fit_stacks, fcontam=fcontam, pas=pas, extensions=extensions, min_ivar=min_ivar, overlap_threshold=overlap_threshold, eazyp=eazyp, eazy_ix=eazy_ix, verbose=verbose)
+                    extra = StackFitter(files=file, sys_err=sys_err, mask_min=mask_min, fit_stacks=fit_stacks, fcontam=fcontam, pas=pas, extensions=extensions, min_ivar=min_ivar, overlap_threshold=overlap_threshold, eazyp=eazyp, eazy_ix=eazy_ix, chi2_threshold=chi2_threshold, verbose=verbose)
                     self.extend(extra)
                     
                     
@@ -244,49 +233,174 @@ class StackFitter(GroupFitter):
         #         self.fit_mask = np.hstack((self.fit_mask, np.ones(self.Nphot, dtype=bool)))
         #         self.DoF += self.Nphot
         #         self.phot_scale = np.array([10.])
-                        
-    def extend(self, st):
-        pass
+    
+    def _parse_beams_list(self):
+        """
+        """                    
+        # Parse from self.beams list
+        self.N = len(self.beams)
+        self.ext = [E.extver for E in self.beams]
         
-        self.beams.extend(st.beams)
-        self.grisms.extend(st.grisms)
-        self.grisms = list(np.unique(self.grisms))
-
-        self.Ngrism = {}
-        for grism in self.grisms:
-            self.Ngrism[grism] = 0
-        
+        self.Ngrism = OrderedDict()
         for beam in self.beams:
-            self.Ngrism[beam.grism] += 1
-            
-        #self.Ngrism = len(self.grisms)
+            if beam.grism in self.Ngrism:
+                self.Ngrism[beam.grism] += 1
+            else:
+                self.Ngrism[beam.grism] = 1
+                
+        # Make "PA" attribute
+        self.PA = OrderedDict()
+        for g in self.Ngrism:
+            self.PA[g] = OrderedDict()
+
+        for i in range(self.N):
+            grism = self.ext[i].split(',')[0]
+            if ',' in self.ext[i]:
+                PA = float(self.ext[i].split(',')[1])
+            else:
+                PA = 0
+                
+            if PA in self.PA[grism]:
+                self.PA[grism][PA].append(i)
+            else:
+                self.PA[grism][PA] = [i]
         
-        self.N += st.N
-        self.ext.extend(st.ext)
-        self.files.extend(st.files)
-        
-        # Re-init
+        self.grisms = list(self.PA.keys())
+                    
         self.Ntot = np.sum([E.size for E in self.beams])
         self.scif = np.hstack([E.scif for E in self.beams])
         self.ivarf = np.hstack([E.ivarf for E in self.beams])
         self.wavef = np.hstack([E.wavef for E in self.beams])
 
         self.weightf = np.hstack([E.weightf for E in self.beams])
-        self.ivarf *= self.weightf
+        #self.ivarf *= self.weightf
 
         self.sivarf = np.sqrt(self.ivarf)
 
         self.fit_mask = np.hstack([E.fit_mask for E in self.beams])
         self.fit_mask &= self.ivarf > self.min_ivar*self.ivarf.max()
+                
+        self.DoF = int((self.fit_mask*self.weightf).sum())
+        #self.Nmask = self.fit_mask.sum()
+        self.Nmask = np.sum([E.fit_mask.sum() for E in self.beams])
         
-        self.slices = self._get_slices()
+        self.slices = self._get_slices(masked=False)
+        self.A_bg = self._init_background(masked=False)
+
         self._update_beam_mask()
         self.A_bgm = self._init_background(masked=True)
-                
-        self.Nmask = self.fit_mask.sum()        
-        self.DoF = int((self.fit_mask*self.weightf).sum())
         
-        self.A_bg = self._init_background()
+        self.flat_flam = np.hstack([E.flat_flam for E in self.beams])
+        
+        self.initialize_masked_arrays()
+        
+    def extend(self, st):
+        """
+        Append second StackFitter objects to `self`.
+        """
+        self.beams.extend(st.beams)
+        self._parse_beams_list()
+        
+        # self.grisms.extend(st.grisms)
+        # self.grisms = list(np.unique(self.grisms))
+        # 
+        # self.Ngrism = {}
+        # for grism in self.grisms:
+        #     self.Ngrism[grism] = 0
+        # 
+        # for beam in self.beams:
+        #     self.Ngrism[beam.grism] += 1
+        #     
+        # #self.Ngrism = len(self.grisms)
+        # 
+        # self.N += st.N
+        # self.ext.extend(st.ext)
+        # self.files.extend(st.files)
+        # 
+        # # Re-init
+        # self.Ntot = np.sum([E.size for E in self.beams])
+        # self.scif = np.hstack([E.scif for E in self.beams])
+        # self.ivarf = np.hstack([E.ivarf for E in self.beams])
+        # self.wavef = np.hstack([E.wavef for E in self.beams])
+        # 
+        # self.weightf = np.hstack([E.weightf for E in self.beams])
+        # #self.ivarf *= self.weightf
+        # 
+        # self.sivarf = np.sqrt(self.ivarf)
+        # 
+        # self.fit_mask = np.hstack([E.fit_mask for E in self.beams])
+        # self.fit_mask &= self.ivarf > self.min_ivar*self.ivarf.max()
+        # 
+        # self.slices = self._get_slices(masked=False)
+        # self.A_bg = self._init_background(masked=False)
+        # 
+        # self._update_beam_mask()
+        # self.A_bgm = self._init_background(masked=True)
+        #         
+        # self.Nmask = self.fit_mask.sum()        
+        # self.DoF = int((self.fit_mask*self.weightf).sum())
+        # 
+        # self.flat_flam = np.hstack([E.flat_flam for E in self.beams])
+    
+    def check_for_bad_PAs(self, poly_order=1, chi2_threshold=1.5, fit_background=True, reinit=True, verbose=False):
+        """
+        """
+
+        wave = np.linspace(2000,2.5e4,100)
+        poly_templates = utils.polynomial_templates(wave, order=poly_order)
+        
+        fit_log = OrderedDict()
+        keep_dict = OrderedDict()
+        has_bad = False
+        
+        keep_beams = []
+        
+        for g in self.PA:
+            fit_log[g] = OrderedDict()
+            keep_dict[g] = []
+                            
+            for pa in self.PA[g]:
+                extensions = [self.ext[i] for i in self.PA[g][pa]]
+                mb_i = StackFitter(self.file, fcontam=self.fcontam,
+                                   sys_err=self.sys_err,
+                                   extensions=extensions, fit_stacks=False,
+                                   verbose=verbose, chi2_threshold=-1)
+                              
+                try:
+                    chi2, _, _, _ = mb_i.xfit_at_z(z=0,
+                                                   templates=poly_templates,
+                                                fit_background=fit_background)
+                except:
+                    chi2 = 1e30
+                    
+                if False:
+                    p_i = mb_i.template_at_z(z=0, templates=poly_templates, fit_background=fit_background, fitter='lstsq', fwhm=1400, get_uncertainties=2)
+                
+                fit_log[g][pa] = {'chi2': chi2, 'DoF': mb_i.DoF, 
+                                  'chi_nu': chi2/np.maximum(mb_i.DoF, 1)}
+                
+            
+            min_chinu = 1e30
+            for pa in self.PA[g]:
+                min_chinu = np.minimum(min_chinu, fit_log[g][pa]['chi_nu'])
+            
+            fit_log[g]['min_chinu'] = min_chinu
+            
+            for pa in self.PA[g]:
+                fit_log[g][pa]['chinu_ratio'] = fit_log[g][pa]['chi_nu']/min_chinu
+                
+                if fit_log[g][pa]['chinu_ratio'] < chi2_threshold:
+                    keep_dict[g].append(pa)
+                    keep_beams.extend([self.beams[i] for i in self.PA[g][pa]])
+                else:
+                    has_bad = True
+        
+        if reinit:
+            self.beams = keep_beams
+            self._parse_beams_list()
+            #self._parse_beams(psf=self.psf_param_dict is not None)
+            
+        return fit_log, keep_dict, has_bad
         
     def compute_model(self, spectrum_1d=None):
         """
@@ -633,14 +747,17 @@ class StackFitter(GroupFitter):
         
         """
         import os
-        import grizli
+        #import grizli
+        
         import matplotlib.gridspec
         import matplotlib.pyplot as plt
         import numpy as np
         
+        from . import utils
+        
         t_complex, t_i = np.load(templates_file)
         
-        z = grizli.utils.log_zgrid(zr=zr, dz=dz0)
+        z = utils.log_zgrid(zr=zr, dz=dz0)
         chi2 = z*0.
         for i in range(len(z)):
             if eazyp:
@@ -666,7 +783,7 @@ class StackFitter(GroupFitter):
             iz = np.argmin(cp)
             z0 = zi[iz]
             dz = dz0/2.02**iter
-            zi = grizli.utils.log_zgrid(zr=[z0-dz*4, z0+dz*4], dz=dz)
+            zi = utils.log_zgrid(zr=[z0-dz*4, z0+dz*4], dz=dz)
             ci = zi*0.
             for i in range(len(zi)):
                 
@@ -714,7 +831,7 @@ class StackFitter(GroupFitter):
             self.DoF = int((self.fit_mask*self.weightf).sum())
             
         # Table with z, chi-squared
-        t = grizli.utils.GTable()
+        t = utils.GTable()
         t['z'] = z
         t['chi2'] = chi2
         
@@ -848,7 +965,7 @@ class StackFitter(GroupFitter):
         
         return tc, tl
     
-    def mask_drizzle_overlaps(self, threshold=3):
+    def mask_drizzle_overlaps(self, threshold=3, verbose=True):
         """
         TBD
         
@@ -875,7 +992,8 @@ class StackFitter(GroupFitter):
                     continue
                 
                 new_mask = (E.scif - min_grism[grism]) < threshold/E.sivarf                
-                print('Mask {0} additional pixels for ext {1}'.format((~new_mask & E.fit_mask).sum(), E.extver))
+                if verbose:
+                    print('Mask {0} additional pixels for ext {1}'.format((~new_mask & E.fit_mask).sum(), E.extver))
                 
                 E.fit_mask &= new_mask
                             
@@ -897,9 +1015,10 @@ class StackFitter(GroupFitter):
         import matplotlib.gridspec
         from matplotlib.ticker import MultipleLocator
         
-        import grizli
+        #import grizli
+        from . import utils
         
-        zfit = grizli.utils.GTable.read(hdu[1])
+        zfit = utils.GTable.read(hdu[1])
         z = zfit['z']
         chi2 = zfit['chi2']
         
@@ -1059,14 +1178,20 @@ class StackFitter(GroupFitter):
         return fig
                 
 class StackedSpectrum(object):
-    def __init__(self, file='gnt_18197.stack.G141.285.fits', sys_err=0.02, mask_min=0.1, extver='G141', mask_threshold=7, fcontam=1., min_ivar=0.001):
-        import grizli
+    def __init__(self, file='gnt_18197.stack.G141.285.fits', sys_err=0.02, mask_min=0.1, extver='G141', mask_threshold=7, fcontam=1., min_ivar=0.001, MW_EBV=0.):
+        import os
+        #import grizli
+        from . import GRIZLI_PATH
+        from . import grismconf
         
         self.sys_err = sys_err
         self.mask_min = mask_min
         self.extver = extver
         self.grism = self.extver.split(',')[0]
         self.mask_threshold=mask_threshold
+        
+        self.MW_EBV = MW_EBV
+        self.init_galactic_extinction(MW_EBV)
         
         self.file = file
         self.hdulist = pyfits.open(file)
@@ -1085,7 +1210,14 @@ class StackedSpectrum(object):
         # Configuration file
         self.is_flambda = self.header['ISFLAM']
         self.conf_file = self.header['CONF']
-        self.conf = grizli.grismconf.aXeConf(self.conf_file)
+        try:
+            self.conf = grismconf.aXeConf(self.conf_file)
+        except:
+            # Try global path 
+            base = os.path.basename(self.conf_file)
+            localfile = os.path.join(GRIZLI_PATH, 'CONF', base)
+            self.conf = grismconf.aXeConf(localfile)
+            
         self.conf.get_beams()
         
         self.sci = self.hdulist['SCI',extver].data*1.
@@ -1137,7 +1269,38 @@ class StackedSpectrum(object):
         
         if mask_threshold > 0:
             self.drizzle_mask(mask_threshold=mask_threshold)
-    
+        
+        self.flat_flam = self.compute_model(in_place=False, is_cgs=True)
+        
+    def init_galactic_extinction(self, MW_EBV=0., R_V=utils.MW_RV):
+        """
+        Initialize Fitzpatrick 99 Galactic extinction
+        
+        Parameters
+        ----------
+        MW_EBV : float
+            Local E(B-V)
+        
+        R_V : float
+            Relation between specific and total extinction, 
+            ``a_v = r_v * ebv``.
+        
+        Returns
+        -------
+        Sets `self.MW_F99` attribute, which is a callable function that 
+        returns the extinction for a supplied array of wavelengths.
+        
+        If MW_EBV <= 0, then sets `self.MW_F99 = None`.
+        
+        """
+        self.MW_F99 = None
+        if MW_EBV > 0:
+            try:
+                from specutils.extinction import ExtinctionF99
+                self.MW_F99 = ExtinctionF99(MW_EBV*R_V, r_v=R_V)
+            except(ImportError):
+                print('Couldn\'t import `specutils.extinction`, MW extinction not implemented')
+                
     @classmethod    
     def get_wavelength_from_header(self, h):
         """
@@ -1150,7 +1313,15 @@ class StackedSpectrum(object):
             w *= 1.e4
         
         return w
-            
+    
+    def init_optimal_profile(self):
+        """Initilize optimal extraction profile
+        """
+        m = self.compute_model(in_place=False)
+        m = m.reshape(self.sh)
+        m[m < 0] = 0
+        self.optimal_profile = m/m.sum(axis=0)
+               
     def optimal_extract(self, data, bin=0, ivar=None, weight=None):
         """
         Optimally-weighted 1D extraction
@@ -1159,11 +1330,19 @@ class StackedSpectrum(object):
         """
         import scipy.ndimage as nd
         
-        flatf = self.flat.reshape(self.sh).sum(axis=0)
-        prof = self.flat.reshape(self.sh)/flatf
+        # flatf = self.flat.reshape(self.sh).sum(axis=0)
+        # prof = self.flat.reshape(self.sh)/flatf
+        # 
+        if not hasattr(self, 'optimal_profile'):
+            self.init_optimal_profile()
         
-        num = prof*data*self.ivar
-        den = prof**2*self.ivar
+        prof = self.optimal_profile
+        
+        if ivar is None:
+            ivar = self.ivar
+            
+        num = prof*data*ivar*self.weight
+        den = prof**2*ivar*self.weight
         opt_flux = num.sum(axis=0)/den.sum(axis=0)
         opt_var = 1./den.sum(axis=0)
         
@@ -1187,7 +1366,7 @@ class StackedSpectrum(object):
         """
         Initiazize components for generating 2D model
         """
-        import grizli.utils_c as u
+        from .utils_c.interp import interp_conserve_c
         
         NY = self.sh[0]
         data = np.zeros((self.header['NAXIS1'], self.header['NAXIS2'], self.header['NAXIS1']))
@@ -1205,9 +1384,14 @@ class StackedSpectrum(object):
         self.fit_data = data.reshape(self.sh[1],-1)
         
         if not self.is_flambda:
-            sens = u.interp.interp_conserve_c(self.wave, 
-                                self.conf.sens[self.beam_name]['WAVELENGTH'],
-                                self.conf.sens[self.beam_name]['SENSITIVITY'])
+            conf_sens = self.conf.sens[self.beam_name]
+            if self.MW_F99 is not None:
+                MWext = 10**(-0.4*(self.MW_F99(conf_sens['WAVELENGTH']*u.AA)))
+            else:
+                MWext = 1.
+            
+            sens = interp_conserve_c(self.wave, conf_sens['WAVELENGTH'],
+                                     conf_sens['SENSITIVITY']*MWext)
             
             if 'DLAM0' in self.header:
                 #print('xx Header')
@@ -1238,11 +1422,12 @@ class StackedSpectrum(object):
         
         xxx is_cgs and in_place are dummy parameters to match `MultiBeam.compute_model`.
         """
-        import grizli.utils_c as u
+        from .utils_c.interp import interp_conserve_c
+        
         if spectrum_1d is None:
             fl = self.wave*0+1
         else:
-            fl = u.interp.interp_conserve_c(self.wave, spectrum_1d[0], spectrum_1d[1])
+            fl = interp_conserve_c(self.wave, spectrum_1d[0], spectrum_1d[1])
             
         model = np.dot(fl, self.fit_data)#.reshape(self.sh)
         #self.model = model

@@ -3,6 +3,8 @@ from distutils.extension import Extension
 #from setuptools import setup
 #from setuptools.extension import Extension
 
+import subprocess
+
 import os
 import numpy
 
@@ -24,15 +26,29 @@ print('C extension: {0}'.format(cext))
 
 extensions = [
     Extension("grizli.utils_c.interp", ["grizli/utils_c/interp"+cext],
-        include_dirs = [numpy.get_include()],),
+        include_dirs = [numpy.get_include()],
+        libraries=["m"]),
         
-    # Extension("grizli/utils_c/nmf", ["grizli/utils_c/nmf"+cext],
-    #     include_dirs = [numpy.get_include()],),
-    
     Extension("grizli.utils_c.disperse", ["grizli/utils_c/disperse"+cext],
-        include_dirs = [numpy.get_include()],),
+        include_dirs = [numpy.get_include()],
+        libraries=["m"]),
 
 ]
+
+#update version
+args = 'git describe --tags'
+p = subprocess.Popen(args.split(), stdout=subprocess.PIPE)
+version = p.communicate()[0].decode("utf-8").strip()
+
+# version = "0.8.0"
+
+version_str = """# git describe --tags
+__version__ = "{0}"\n""".format(version)
+
+fp = open('grizli/version.py','w')
+fp.write(version_str)
+fp.close()
+print('Git version: {0}'.format(version))
 
 if USE_CYTHON:
     extensions = cythonize(extensions)
@@ -46,14 +62,14 @@ def read(fname):
 
 setup(
     name = "grizli",
-    version = "0.2.1",
+    version = version,
     author = "Gabriel Brammer",
     author_email = "gbrammer@gmail.com",
     description = "Grism redshift and line analysis software",
     license = "MIT",
     url = "https://github.com/gbrammer/grizli",
-    download_url = "https://github.com/gbrammer/grizli/tarball/0.2.1",
-    packages=['grizli', 'grizli/utils_c', 'grizli/tests'],
+    download_url = "https://github.com/gbrammer/grizli/tarball/{0}".format(version),
+    packages=['grizli', 'grizli/pipeline', 'grizli/utils_c', 'grizli/tests', 'grizli/galfit'],
     # requires=['numpy', 'scipy', 'astropy', 'drizzlepac', 'stwcs'],
     # long_description=read('README.rst'),
     classifiers=[
@@ -62,6 +78,6 @@ setup(
         'Topic :: Scientific/Engineering :: Astronomy',
     ],
     ext_modules = extensions,
-    package_data={'grizli': ['data/*', 'data/templates/*', 'data/templates/fsps/*']},
+    package_data={'grizli': ['data/*', 'data/templates/*', 'data/templates/stars/*', 'data/templates/fsps/*']},
     # scripts=['grizli/scripts/flt_info.sh'],
 )

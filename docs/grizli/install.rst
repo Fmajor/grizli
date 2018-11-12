@@ -1,7 +1,7 @@
 Installation instructions
 
-Dependencies
-------------
+Python Environment
+------------------
 
 `Grizli` has been developed to work in the `astroconda
 <http://astroconda.readthedocs.io/en/latest/>`__ Python environment, which
@@ -9,10 +9,48 @@ provides most of the required modules listed here, including general utilities
 like `numpy`, `scipy`, and `matplotlib`, as well as astronomy tools like
 `astropy` and specific software for dealing with space-telescope data
 (`stsci.tools`, `drizzlepac`, etc.). It has been tested to run in astroconda
-with Python versions ``2.7.12`` and ``3.5.2``.
+with Python version ``3.5.4``.  The basic build is tested in Python ``2.7``, 
+``3.5`` and ``3.6`` with `travis <https://travis-ci.org/gbrammer/grizli>`__, 
+but the current test suite does not test much actual functionality of the 
+code.
 
-There are a few additional required modules not provided with `astroconda`,
-summarized here. `/usr/local/share/python` is a good place to download and
+Installation with a Conda environment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+An `environment.yml <https://github.com/gbrammer/grizli/blob/master/environment.yml>`__ file is included with the `~grizli` distribution to 
+provide an automatic way of installing the required dependencies, getting
+them from `conda`, `pip`, and directly from `github` as necessary.  To use 
+this file, do the following
+
+    .. code:: bash
+
+        cd /usr/local/share/python # or some other location, even /tmp/
+
+        # Fetch the grizli repo
+        git clone https://github.com/gbrammer/grizli.git
+        cd grizli
+        
+        # Generate a conda environment named "grizli-dev"
+        conda env create -f environment_min.yml -n grizli-dev
+                
+        # Activate the environment.  This needs to be done each time you 
+        # start a new terminal, or put it in ~/.bashrc
+        source activate grizli-dev
+        
+        # Install fork of drizzle
+        # (this breaks if within the environment file)
+        pip install git+https://github.com/gbrammer/drizzle.git
+        
+        # Compile and install the grizli module.  Only needs to be done
+        # once or after updating the repository.
+        python setup.py install 
+
+Once you've built the code, proceed to `Set up directories and fetch config files`_.
+
+Manual installation of dependencies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There are a number of additional required modules not provided with `astroconda`,
+summarized here.   `/usr/local/share/python` is a good place to download and
 compile Python modules not provided automatically with `astroconda`:
 
     .. code:: bash
@@ -89,7 +127,15 @@ but now appears to be trivial under conda:
 
         conda install shapely
 
+`hsaquery <https://github.com/gbrammer/esa-hsaquery>`__ - Python tools for 
+querying exposure-level data in the 
+`ESA Hubble Science Archive <http://archives.esac.esa.int/ehst/#search>`__.:
 
+    .. code:: bash
+
+        pip install hsaquery
+        
+                
 Build ``grizli``
 ----------------
 ``grizli`` - The main code repository. There is an old version of `grizli`
@@ -99,9 +145,12 @@ the GitHub repository until the versioning and tagging is straightened out:
     .. code:: bash
 
         git clone https://github.com/gbrammer/grizli.git
+
         cd grizli
         python setup.py install
 
+Set up directories and fetch config files
+-----------------------------------------
 `Grizli` requires a few environmental variables to be set that point to
 directory location of configuration files. The "`export`" lines below can be
 put into the *~/.bashrc* or *~/.bash_profile* setup files so that the system
@@ -109,6 +158,7 @@ variables are set automatically when you start a new terminal/shell session.
 
     .. code:: bash
         
+        # Put these lines in ~/.bashrc
         export GRIZLI="${HOME}/grizli" # or anywhere else
         export iref="${GRIZLI}/iref/"  # for WFC3 calibration files
         export jref="${GRIZLI}/jref/"  # for ACS calibration files
@@ -127,7 +177,7 @@ files that are currently hard-coded:
     
     .. code:: python
     
-        >>> import grizli
+        >>> import grizli.utils
         >>> # set ACS=True below to get files necessary for G800L processing
         >>> grizli.utils.fetch_default_calibs(ACS=False) # to iref/iref
         >>> grizli.utils.fetch_config_files()            # to $GRIZLI/CONF
@@ -138,14 +188,13 @@ the repository but that need to be in a specific directory,
 that directory without touching the files in the repository itself. For
 default processing they can by symlinked from the repository:
 
-    .. code:: bash
-        
-        # Get installed location of grizli
-        dist=`python -c "import grizli; import os; print(os.path.dirname(grizli.__file__))"`
-        
-        cd $GRIZLI/templates                # created above
-        ln -s ${dist}/data/templates/* ./
-        
+    .. code:: python
+
+        >>> import grizli.utils
+        >>> grizli.utils.symlink_templates(force=False)
+        >>> # Set force=True to symlink files even if they already exist in 
+        >>> # $GRIZLI/templates/.
+
 
 
 
