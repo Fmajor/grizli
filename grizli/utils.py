@@ -181,7 +181,8 @@ def radec_to_targname(ra=0, dec=0, header=None):
     
     return targname
     
-def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1):
+def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1, 
+                       scale_by_pixel_area=False):
     """
     Own blot function for blotting exact pixels without rescaling for input 
     and output pixel size
@@ -198,7 +199,11 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1):
         
     out_wcs : `~astropy.wcs.WCS`
         Output WCS.  Must have _naxis1, _naxis2 attributes.
-    
+   
+    scale_by_pixel_area : bool
+        If True, then scale the output image by the square of the image pixel
+        scales (out**2/in**2), i.e., the pixel areas.
+        
     Returns
     -------
     out_data : `~numpy.ndarray`
@@ -284,6 +289,11 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1):
     filtered = func(out_data, size=5)
     out_data[fill] = filtered[fill]
     
+    if scale_by_pixel_area:
+        in_scale  = get_wcs_pscale(in_wcs)
+        out_scale  = get_wcs_pscale(out_wcs)
+        out_data *= out_scale**2/in_scale**2
+        
     return out_data
     
         
@@ -686,20 +696,31 @@ def parse_visit_overlaps(visits, buffer=15.):
         if used[i]:
             continue
         
-        im_i = pyfits.open(glob.glob(visits[i]['product']+'_dr?_sci.fits')[0])
-        wcs_i = pywcs.WCS(im_i[0])
-        fp_i = Polygon(wcs_i.calc_footprint()).buffer(buffer/3600.)
-        
+        if 'footprint' in visits[i]:
+            fp_i = visits[i]['footprint'].buffer(buffer/3600.)
+        else:
+            im_i = pyfits.open(glob.glob(visits[i]['product']+'_dr?_sci.fits')[0])
+            wcs_i = pywcs.WCS(im_i[0])
+            fp_i = Polygon(wcs_i.calc_footprint()).buffer(buffer/3600.)
+            
         exposure_groups.append(copy.deepcopy(visits[i]))
         
         for j in range(i+1, N):
             f_j = visits[j]['product'].split('-')[-1]
             if (f_j != f_i) | (used[j]):
                 continue
+            
+            #
+            if 'footprint' in visits[j]:
+                fp_j = visits[j]['footprint'].buffer(buffer/3600.)
+            else:
+                im_j = pyfits.open(glob.glob(visits[j]['product']+'_dr?_sci.fits')[0])
+                wcs_j = pywcs.WCS(im_j[0])
+                fp_j = Polygon(wcs_j.calc_footprint()).buffer(buffer/3600.)
                 
-            im_j = pyfits.open(glob.glob(visits[j]['product']+'_dr?_sci.fits')[0])
-            wcs_j = pywcs.WCS(im_j[0])
-            fp_j = Polygon(wcs_j.calc_footprint()).buffer(buffer/3600.)
+            # im_j = pyfits.open(glob.glob(visits[j]['product']+'_dr?_sci.fits')[0])
+            # wcs_j = pywcs.WCS(im_j[0])
+            # fp_j = Polygon(wcs_j.calc_footprint()).buffer(buffer/3600.)
             
             olap = fp_i.intersection(fp_j)
             if olap.area > 0:
@@ -2128,6 +2149,11 @@ def array_templates(templates, wave=None, max_R=5000, z=0):
     
     max_R : float
         Maximum spectral resolution of the regridded templates.
+    
+    z : float
+        Redshift where to evaluate the templates.  But note that this is only
+        used to shift templates produced by `bspline_templates`, which are
+        defined in the observed frame.
         
     Returns
     -------
@@ -2172,7 +2198,7 @@ def array_templates(templates, wave=None, max_R=5000, z=0):
     
     return wave, flux_arr, is_line
     
-def compute_equivalent_widths(templates, coeffs, covar, max_R=5000, Ndraw=1000, seed=0, z=0):
+def compute_equivalent_widths(templates, coeffs, covar, max_R=5000, Ndraw=1000, seed=0, z=0, observed_frame=False):
     """Compute template-fit emission line equivalent widths
     
     Parameters
@@ -2195,6 +2221,13 @@ def compute_equivalent_widths(templates, coeffs, covar, max_R=5000, Ndraw=1000, 
     seed : positive int
         Random number seed to produce repeatible results. If `None`, then 
         use default state.
+    
+    z : float
+        Redshift where the fit is evaluated
+    
+    observed_framme : bool
+        If true, then computed EWs are observed frame, otherwise they are 
+        rest frame at redshift `z`.
         
     Returns
     -------
@@ -2245,7 +2278,8 @@ def compute_equivalent_widths(templates, coeffs, covar, max_R=5000, Ndraw=1000, 
         
         # Where line template non-zero
         mask = flux_arr[clip,:][ix,:] > 0
-        ew_i = np.trapz((line/continuum)[:,mask], wave[mask], axis=1)
+        ew_i = np.trapz((line/continuum)[:,mask], 
+                        wave[mask]*(1+z*observed_frame), axis=1)
         
         EWdict[key] = np.percentile(ew_i, [16., 50., 84.])
     
@@ -2611,7 +2645,11 @@ def get_wcs_pscale(wcs):
         
     """
     from numpy import linalg
-    det = linalg.det(wcs.wcs.cd)
+    try:
+        det = linalg.det(wcs.wcs.cd)
+    except:
+        det = linalg.det(wcs.wcs.pc)
+        
     pscale = np.sqrt(np.abs(det))*3600.
     return pscale
     
@@ -2651,7 +2689,11 @@ def transform_wcs(in_wcs, translation=[0.,0.], rotation=0., scale=1.):
     _mat = np.array([[np.cos(theta), -np.sin(theta)],
                      [np.sin(theta), np.cos(theta)]])
     
-    out_wcs.wcs.cd = np.dot(out_wcs.wcs.cd, _mat)/scale
+    try:
+        out_wcs.wcs.cd = np.dot(out_wcs.wcs.cd, _mat)/scale
+    except:
+        out_wcs.wcs.pc = np.dot(out_wcs.wcs.pc, _mat)/scale
+        
     out_wcs.pscale = get_wcs_pscale(out_wcs)
     #out_wcs.wcs.crpix *= scale
     if hasattr(out_wcs, '_naxis1'):
@@ -2861,6 +2903,136 @@ def make_spectrum_wcsheader(center_wave=1.4e4, dlam=40, NX=100, spatial_scale=1,
     
     return refh, ref_wcs
 
+def read_gzipped_header(file='test.fits.gz', BLOCK=1024, NMAX=256, nspace=16, strip=False):
+    """
+    Read primary header from a (potentially large) zipped FITS file
+    
+    The script proceeds by reading `NMAX` segments of size `BLOCK` bytes from  
+    the file and searching for a string `END + ' '*nspace` in the data 
+    indicating the end of the primary header.
+    
+    Parameters
+    ----------
+    file : str
+        Filename of gzipped FITS file
+    
+    BLOCK, NMAX, nspace : int
+        Parameters for reading bytes from the input file
+    
+    strip : bool
+        Send output through `strip_header_keys`.
+        
+        
+    Returns
+    -------
+    header : `~astropy.io.fits.Header`
+        Header object
+        
+    """
+    import gzip
+    import astropy.io.fits as pyfits
+    
+    f = gzip.GzipFile(fileobj=open(file,'rb'))
+        
+    data = b''
+    end=b' END'+b' '*nspace
+    
+    for i in range(NMAX):
+        data_i = f.read(BLOCK)
+        if end in data_i:
+            break
+        
+        data += data_i
+    
+    if (i == NMAX-1):
+        print('Error: END+{3}*" " not found in first {0}x{1} bytes of {2})'.format(NMAX, BLOCK, file, nspace))
+        f.close()
+        return {}
+        
+    ix = data_i.index(end)
+    data += data_i[:ix]+end #data_i[:ix]
+        
+    f.close()
+    data_str = data.decode('utf8')
+    h = pyfits.Header.fromstring(data_str)
+    
+    if strip:
+        return strip_header_keys(h, usewcs=True)
+    else:
+        return h
+        
+DRIZZLE_KEYS = ['GEOM','DATA', 'DEXP', 'OUDA', 'OUWE', 'OUCO', 'MASK', 'WTSC', 'KERN', 'PIXF', 'COEF', 'OUUN', 'FVAL', 'WKEY', 'SCAL', 'ISCL']
+def strip_header_keys(header, comment=True, history=True, drizzle_keys=DRIZZLE_KEYS, usewcs=False, keep_with_wcs=['EXPTIME','FILTER','TELESCOP','INSTRUME','DATE-OBS','EXPSTART','EXPEND']):
+    """
+    Strip header keywords
+    
+    Parameters
+    ----------
+    
+    comment, history : bool
+        Strip 'COMMENT' and 'HISTORY' keywords, respectively.
+        
+    drizzle_keys : list
+        Strip keys produced by `~drizzlepac.astrodrizzle`.
+    
+    usewcs : bool
+        Alternatively, just generate a simple WCS-only header from the input 
+        header.
+    
+    keep_with_wcs : list
+        Additional keys to try to add to the `usewcs` header.
+    
+    Returns
+    -------
+    
+    header : `~astropy.io.fits.Header`
+        Header object.
+    
+    """
+    import copy
+    import astropy.wcs as pywcs
+    
+    # Parse WCS and build header
+    if usewcs:
+        wcs = pywcs.WCS(header)
+        h = to_header(wcs)
+        for k in keep_with_wcs:
+            if k in header:
+                if k in header.comments:
+                    h[k] = header[k], header.comments[k]
+                else:
+                    h[k] = header[k]
+        
+        if 'FILTER' in keep_with_wcs:
+            try:
+                h['FILTER'] = (get_hst_filter(header), 
+                               'element selected from filter wheel')
+            except:
+                pass
+        
+        return h
+    
+    h = copy.deepcopy(header)    
+    keys = list(h.keys())
+    strip_keys = []
+    if comment:
+        strip_keys.append('COMMENT')
+    
+    if history:
+        strip_keys.append('HISTORY')
+            
+    for k in keys:
+        if k in strip_keys:
+            h.remove(k)
+            
+        if drizzle_keys:
+            if k.startswith('D'):
+                if (k[-4:] in drizzle_keys) | k.endswith('VER'):
+                    h.remove(k)
+    
+    return h
+    
+            
 def to_header(wcs, relax=True):
     """Modify `astropy.wcs.WCS.to_header` to produce more keywords
     
@@ -2981,6 +3153,13 @@ def make_wcsheader(ra=40.07293, dec=-1.6137748, size=2, pixscale=0.1, get_hdu=Fa
     hout['CTYPE1'] = 'RA---TAN'
     hout['CTYPE2'] = 'DEC--TAN'
     
+    hout['RADESYS'] = 'ICRS'
+    hout['EQUINOX'] = 2000
+    hout['LATPOLE'] = hout['CRVAL2']
+    hout['LONPOLE'] = 180
+    
+    hout['PIXASEC'] = pixscale, 'Pixel scale in arcsec'
+    
     wcs_out = pywcs.WCS(hout)
     
     theta_rad = np.deg2rad(theta)
@@ -3003,6 +3182,48 @@ def make_wcsheader(ra=40.07293, dec=-1.6137748, size=2, pixscale=0.1, get_hdu=Fa
     else:
         return hout, wcs_out
 
+def get_flt_footprint(flt_file, extensions=[1,2,3,4], patch_args=None):
+    """
+    Compute footprint of all SCI extensions of an HST exposure
+    
+    Parameters
+    ----------
+    extensions : list
+        List of extensions to retrieve (can have extras).
+    
+    patch_args : dict or None
+        If a `dict`, then generate a patch for the footprint passing 
+        `**patch_args` arguments (e.g., `{'fc':'blue', 'alpha':0.1}`).
+        
+    Returns
+    -------
+    fp / patch : `~shapely.geometry` object or `~descartes.PolygonPatch`
+        The footprint or footprint patch.
+    
+    """
+    from shapely.geometry import Polygon
+    from descartes import PolygonPatch
+    
+    im = pyfits.open(flt_file, mode='update')
+    fp = None
+    
+    for ext in extensions:
+        if ('SCI',ext) not in im:
+            continue
+            
+        wcs = pywcs.WCS(im['SCI',ext].header, fobj=im)
+        p_i = Polygon(wcs.calc_footprint())
+        if fp is None:
+            fp = p_i
+        else:
+            fp = fp.union(p_i)
+    
+    if patch_args is not None:
+        patch = PolygonPatch(fp, **patch_args)
+        return patch
+    else:
+        return fp
+            
 def make_maximal_wcs(files, pixel_scale=0.1, get_hdu=True, pad=90, verbose=True):
     """
     Compute a North-up HDU with a footprint that contains all of `files`

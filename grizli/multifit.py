@@ -615,8 +615,8 @@ class GroupFLT():
             print('Models computed - {0:.2f} sec.'.format(t1_pool - t0_pool))
         
     def get_beams(self, id, size=10, center_rd=None, beam_id='A',
-                  min_overlap=0.1, min_valid_pix=10,
-                  get_slice_header=True):
+                  min_overlap=0.1, min_valid_pix=10, min_mask=0.01, 
+                  min_sens=0.08, get_slice_header=True):
         """Extract 2D spectra "beams" from the GroupFLT exposures.
         
         Parameters
@@ -641,6 +641,14 @@ class GroupFLT():
         min_valid_pix : int
             Minimum number of valid pixels (`beam.fit_mask == True`) in 2D
             spectrum.
+        
+        min_mask : float
+            Minimum factor relative to the maximum pixel value of the flat
+            f-lambda model where the 2D cutout data are considered good.  
+            Passed through to `~grizli.model.BeamCutout`.
+        
+        min_sens : float
+            See `~grizli.model.BeamCutout`.
             
         get_slice_header : bool
             Passed to `~grizli.model.BeamCutout`.
@@ -657,7 +665,8 @@ class GroupFLT():
         for flt, beam in zip(self.FLTs, beams):
             try:
                 out_beam = model.BeamCutout(flt=flt, beam=beam[beam_id],
-                                        conf=flt.conf, 
+                                        conf=flt.conf, min_mask=min_mask,
+                                        min_sens=min_sens,
                                         get_slice_header=get_slice_header)
             except:
                 #print('Except: get_beams')
@@ -1050,8 +1059,7 @@ class GroupFLT():
                 # Not the fork that works for all input/output arrays
                 raise(ImportError)
             
-            print('drizzle!!')
-            
+            #print('drizzle!!')
             from drizzle.dodrizzle import dodrizzle
             drizzler = dodrizzle
             dfillval = '0'
@@ -1167,7 +1175,7 @@ class GroupFLT():
             
     
 class MultiBeam(GroupFitter):
-    def __init__(self, beams, group_name='group', fcontam=0., psf=False, polyx=[0.3, 2.5], MW_EBV=0., sys_err=0.0, verbose=True):
+    def __init__(self, beams, group_name='group', fcontam=0., psf=False, polyx=[0.3, 2.5], MW_EBV=0., min_mask=0.01, min_sens=0.08, sys_err=0.0, verbose=True):
         """Tools for dealing with multiple `~.model.BeamCutout` instances 
         
         Parameters
@@ -1175,12 +1183,39 @@ class MultiBeam(GroupFitter):
         beams : list
             List of `~.model.BeamCutout` objects.
         
-        group_name : type
+        group_name : str
             Rootname to use for saved products
             
-        fcontam : type
-            Factor to use to downweight contaminated pixels.
+        fcontam : float
+            Factor to use to downweight contaminated pixels.  The pixel 
+            inverse variances are scaled by the following weight factor when 
+            evaluating chi-squared of a 2D fit,
+            
+            `weight = np.exp(-(fcontam*np.abs(contam)*np.sqrt(ivar)))`
+            
+            where `contam` is the contaminating flux and `ivar` is the initial
+            pixel inverse variance.
+            
+        psf : bool
+            Fit an ePSF model to the direct image to use as the morphological
+            reference.
+            
+        MW_EBV : float
+            Milky way foreground extinction.
         
+        min_mask : float
+            Minimum factor relative to the maximum pixel value of the flat
+            f-lambda model where the 2D cutout data are considered good.  
+            Passed through to `~grizli.model.BeamCutout`.
+
+        min_sens : float
+            See `~grizli.model.BeamCutout`.
+            
+        sys_err : float
+            Systematic error added in quadrature to the pixel variances: 
+                
+                `var_total = var_initial + (beam.sci*sys_err)**2`
+                
         Attributes
         ----------
         TBD : type
@@ -1189,6 +1224,8 @@ class MultiBeam(GroupFitter):
         self.group_name = group_name
         self.fcontam = fcontam
         self.polyx = polyx
+        self.min_mask = min_mask
+        self.min_sens = min_sens
         
         if isinstance(beams, str):
             self.load_master_fits(beams, verbose=verbose)            
@@ -1481,7 +1518,8 @@ class MultiBeam(GroupFitter):
                 #print('Copy!')
                 hducopy = pyfits.HDUList([hdu[i].__class__(data=hdu[i].data*1, header=copy.deepcopy(hdu[i].header), name=hdu[i].name) for i in range(i0, i0+Next_i)])
             
-            beam = model.BeamCutout(fits_file=hducopy)#Next[i]])
+            beam = model.BeamCutout(fits_file=hducopy, min_mask=self.min_mask,
+                                    min_sens=self.min_sens) 
             
             self.beams.append(beam)
             if verbose:
@@ -1513,7 +1551,9 @@ class MultiBeam(GroupFitter):
             if verbose:
                 print(file)
             
-            beam = model.BeamCutout(fits_file=file, conf=conf)
+            beam = model.BeamCutout(fits_file=file, conf=conf, 
+                                    min_mask=self.min_mask, 
+                                    min_sens=self.min_sens)
             self.beams.append(beam)
 
     def reshape_flat(self, flat_array):
@@ -2631,7 +2671,7 @@ class MultiBeam(GroupFitter):
 
         return drizzled_segm
         
-    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True, verbose=True):
+    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True, verbose=True, include_segmentation=True, get_ir_psfs=True):
         """
         TBD
         :param mask_sn_limit: a number (>=0)                                                <<170604>> modified by Xin
@@ -2804,7 +2844,8 @@ class MultiBeam(GroupFitter):
                         delattr(beam, 'oivar')
                         
                 hdu[0].header['REDSHIFT'] = (z_driz, 'Redshift used')
-                for e in [3,4,5,6]:
+                #for e in [3,4,5,6]:
+                for e in [-4,-3,-2,-1]:
                     hdu[e].header['EXTVER'] = line
                     hdu[e].header['REDSHIFT'] = (z_driz, 'Redshift used')
                     hdu[e].header['RESTWAVE'] = (line_wavelengths[line][0], 
@@ -2817,14 +2858,16 @@ class MultiBeam(GroupFitter):
                     hdu_full[0].header['NUMLINES'] = (1, 
                                                "Number of lines in this file")
                 else:
-                    hdu_full.extend(hdu[3:])
+                    hdu_full.extend(hdu[-4:])
                     hdu_full[0].header['NUMLINES'] += 1 
                 
-                    # Make sure SCI extension is filled.  Can be empty for 
+                    # Make sure DSCI extension is filled.  Can be empty for 
                     # lines at the edge of the grism throughput
-                    if hdu['DWHT'].data.max() != 0:
-                        hdu_full['DSCI'] = hdu['DSCI']
-                        hdu_full['DWHT'] = hdu['DWHT']
+                    for f_i in range(hdu[0].header['NDFILT']):
+                        filt_i = hdu[0].header['DFILT{0:02d}'.format(f_i+1)]
+                        if hdu['DWHT',filt_i].data.max() != 0:
+                            hdu_full['DSCI',filt_i] = hdu['DSCI',filt_i]
+                            hdu_full['DWHT',filt_i] = hdu['DWHT',filt_i]
                     
                 li = hdu_full[0].header['NUMLINES']
                 hdu_full[0].header['LINE{0:03d}'.format(li)] = line
@@ -2842,11 +2885,50 @@ class MultiBeam(GroupFitter):
                                         wave=np.median(self.beams[0].wave),
                                         fcontam=self.fcontam,
                                         **pline)
-            hdu_full = hdu[:3]
+            hdu_full = hdu[:-4]
             hdu_full[0].header['REDSHIFT'] = (z_driz, 'Redshift used')
             hdu_full[0].header['NUMLINES'] = 0
             hdu_full[0].header['HASLINES'] = ' '
-                                        
+        
+        if include_segmentation:
+            line_wcs = pywcs.WCS(hdu_full[1].header)
+            segm = self.drizzle_segmentation(wcsobj=line_wcs)
+            seg_hdu = pyfits.ImageHDU(data=segm.astype(np.int32), name='SEG')
+            hdu_full.insert(1, seg_hdu)
+        
+        if get_ir_psfs:
+            import grizli.galfit.psf
+            ir_beams = []
+            gr_filters = {'G102':['F105W'], 'G141':['F105W','F125W','F140W','F160W']}
+            show_filters = []
+            
+            for gr in ['G102','G141']:
+                if gr in self.PA:
+                    show_filters.extend(gr_filters[gr])
+                    for pa in self.PA[gr]:
+                        for i in self.PA[gr][pa]:
+                            ir_beams.append(self.beams[i])
+            
+            if len(ir_beams) > 0:             
+                dp = grizli.galfit.psf.DrizzlePSF(driz_hdu=hdu_full['DSCI'], 
+                                    beams=self.beams)
+                
+                for filt in np.unique(show_filters):
+                    if verbose:
+                        print('Get linemap PSF: {0}'.format(filt))
+                    
+                    psf = dp.get_psf(ra=dp.driz_wcs.wcs.crval[0],
+                                     dec=dp.driz_wcs.wcs.crval[1], 
+                                     filter=filt, 
+                                     pixfrac=dp.driz_header['PIXFRAC'], 
+                                     kernel=dp.driz_header['DRIZKRNL'], 
+                                     wcs_slice=dp.driz_wcs, get_extended=True, 
+                                     verbose=False, get_weight=False)
+                                     
+                    psf[1].header['EXTNAME'] = 'DPSF'
+                    psf[1].header['EXTVER'] = filt
+                    hdu_full.append(psf[1])
+                    
         if save_fits:
             hdu_full.writeto('{0}_{1:05d}.line.fits'.format(self.group_name, self.id), clobber=True, output_verify='silentfix')
         
@@ -3039,7 +3121,9 @@ class MultiBeam(GroupFitter):
         
         ### Reset model profile for optimal extractions
         for b in self.beams:
-            b._parse_from_data()
+            #b._parse_from_data()
+            b._parse_from_data(contam_sn_mask=b.contam_sn_mask,
+                                  min_mask=b.min_mask, min_sens=b.min_sens)
         
         self._parse_beam_arrays()
                 
@@ -3076,7 +3160,9 @@ class MultiBeam(GroupFitter):
         
         ### Reset model profile for optimal extractions
         for b in self.beams:
-            b._parse_from_data()
+            #b._parse_from_data()
+            b._parse_from_data(contam_sn_mask=b.contam_sn_mask,
+                                  min_mask=b.min_mask, min_sens=b.min_sens)
             
             # Needed for background modeling
             if hasattr(b, 'xp'):
@@ -3786,8 +3872,7 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
             # Not the fork that works for all input/output arrays
             raise(ImportError)
         
-        print('drizzle!!')
-        
+        #print('drizzle!!')
         from drizzle.dodrizzle import dodrizzle
         drizzler = dodrizzle
         dfillval = '0'
@@ -4002,11 +4087,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             # Not the fork that works for all input/output arrays
             raise(ImportError)
         
-        print('drizzle!!')
+        #print('drizzle!!')
         from drizzle.dodrizzle import dodrizzle
         drizzler = dodrizzle
         dfillval = '0'
-        
     except:
         from drizzlepac.astrodrizzle import adrizzle
         adrizzle.log.setLevel('ERROR')
@@ -4046,10 +4130,30 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     xoutsci = np.zeros(sh, dtype=np.float32)
     xoutwht = np.zeros(sh, dtype=np.float32)
     xoutctx = np.zeros(sh, dtype=np.int32)
+    
+    #direct_filters = np.unique([b.direct.filter for b in self.beams])
+    all_direct_filters = []
+    for beam in beams:
+        if direct_extension == 'REF':
+            if beam.direct['REF'] is None:
+                filt_i = beam.direct.ref_filter
+                direct_extension = 'SCI'
+            else:
+                filt_i = beam.direct.filter
+        
+        all_direct_filters.append(filt_i)
+    
+    direct_filters = np.unique(all_direct_filters)
+    
+    doutsci, doutwht, doutctx = {}, {}, {}
+    for f in direct_filters:
+        doutsci[f] = np.zeros(sh, dtype=np.float32)
+        doutwht[f] = np.zeros(sh, dtype=np.float32)
+        doutctx[f] = np.zeros(sh, dtype=np.int32)
 
-    doutsci = np.zeros(sh, dtype=np.float32)
-    doutwht = np.zeros(sh, dtype=np.float32)
-    doutctx = np.zeros(sh, dtype=np.int32)
+    # doutsci = np.zeros(sh, dtype=np.float32)
+    # doutwht = np.zeros(sh, dtype=np.float32)
+    # doutctx = np.zeros(sh, dtype=np.int32)
     
     ## Loop through beams and run drizzle
     for i, beam in enumerate(beams):
@@ -4146,10 +4250,8 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
                          pixfrac=pixfrac, kernel=kernel, fillval=dfillval)
         
         ### Direct thumbnail
-        if direct_extension == 'REF':
-            if beam.direct['REF'] is None:
-                direct_extension = 'SCI'
-                
+        filt_i = all_direct_filters[i]
+        
         if direct_extension == 'REF':
             thumb = beam.direct['REF']
             thumb_wht = np.cast[np.float32]((thumb != 0)*1)
@@ -4158,9 +4260,9 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             thumb_wht = 1./(beam.direct.data['ERR']/beam.direct.photflam)**2
             thumb_wht[~np.isfinite(thumb_wht)] = 0
             
-        
         drizzler(thumb, beam.direct.wcs, thumb_wht, output_wcs, 
-                         doutsci, doutwht, doutctx, 1., 'cps', 1, 
+                         doutsci[filt_i], doutwht[filt_i], doutctx[filt_i], 
+                         1., 'cps', 1, 
                          wcslin_pscale=beam.direct.wcs.pscale, uniqid=1, 
                          pixfrac=pixfrac, kernel=kernel, fillval=dfillval)
         
@@ -4180,7 +4282,9 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     outwht  *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     coutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
     xoutwht *= (beams[0].grism.wcs.pscale/output_wcs.pscale)**4
-    doutwht *= (beams[0].direct.wcs.pscale/output_wcs.pscale)**4
+    
+    for filt_i in all_direct_filters:
+        doutwht[filt_i] *= (beams[0].direct.wcs.pscale/output_wcs.pscale)**4
     
     # #### For variance <<170501>> added by Xin
     # outwht /= outvar
@@ -4205,9 +4309,28 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
         
     h = header.copy()
     h['ID'] = (beam.id, 'Object ID')
-    h['FILTER'] = (beam.direct.filter, 'Direct image filter')
-    thumb_sci = pyfits.ImageHDU(data=doutsci, header=h, name='DSCI')
-    thumb_wht = pyfits.ImageHDU(data=doutwht, header=h, name='DWHT')
+    h['PIXFRAC'] = (pixfrac, 'Drizzle PIXFRAC')
+    h['DRIZKRNL'] = (kernel, 'Drizzle kernel')
+    
+    p.header['NDFILT'] = len(direct_filters), 'Number of direct image filters'
+    for i, filt_i in enumerate(direct_filters):
+        p.header['DFILT{0:02d}'.format(i+1)] = filt_i
+        p.header['NFILT{0:02d}'.format(i+1)] = all_direct_filters.count(filt_i), 'Number of beams with this direct filter'
+    
+    HDUL = [p]
+    for i, filt_i in enumerate(direct_filters):
+        h['FILTER'] = (filt_i, 'Direct image filter')
+        
+        thumb_sci = pyfits.ImageHDU(data=doutsci[filt_i], header=h,
+                                    name='DSCI')
+        thumb_wht = pyfits.ImageHDU(data=doutwht[filt_i], header=h,
+                                    name='DWHT')
+
+        thumb_sci.header['EXTVER'] = filt_i                         
+        thumb_wht.header['EXTVER'] = filt_i                         
+        
+        HDUL += [thumb_sci, thumb_wht]
+                                    
     #thumb_seg = pyfits.ImageHDU(data=seg_slice, header=h, name='DSEG')
         
     h['FILTER'] = (beam.grism.filter, 'Grism filter')
@@ -4218,7 +4341,9 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     grism_contam = pyfits.ImageHDU(data=xoutsci, header=h, name='CONTAM')
     grism_wht = pyfits.ImageHDU(data=outwht, header=h, name='LINEWHT')
     
-    HDUL = [p, thumb_sci, thumb_wht, grism_sci, grism_cont, grism_contam, grism_wht]        
+    #HDUL = [p, thumb_sci, thumb_wht, grism_sci, grism_cont, grism_contam, grism_wht]        
+    HDUL += [grism_sci, grism_cont, grism_contam, grism_wht]        
+
     return pyfits.HDUList(HDUL)
 
 def show_drizzle_HDU(hdu, diff=True):
@@ -4418,8 +4543,7 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
             # Not the fork that works for all input/output arrays
             raise(ImportError)
         
-        print('drizzle!!')
-        
+        #print('drizzle!!')
         from drizzle.dodrizzle import dodrizzle
         drizzler = dodrizzle
         dfillval = '0'
