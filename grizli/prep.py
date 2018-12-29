@@ -286,7 +286,7 @@ def fresh_flt_file(file, preserve_dq=False, path='../RAW/', verbose=True, extra_
         
         c1m.flush()
         
-    orig_file.writeto(local_file, clobber=True)
+    orig_file.writeto(local_file, overwrite=True)
     
     if mask_regions:
         apply_region_mask(local_file, dq_value=1024)
@@ -589,7 +589,7 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
                          verbose=True, guess=[0., 0., 0., 1], simple=True, 
                          rms_limit=2, use_guess=False, 
                          triangle_size_limit=[5,1800], 
-                         triangle_ba_max=0.9):
+                         triangle_ba_max=0.9, max_err_percentile=80):
     """TBD
     """        
     if not os.path.exists('{0}.cat.fits'.format(root)):
@@ -598,14 +598,23 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
     else:
         cat = Table.read('{0}.cat.fits'.format(root))
     
+    if max_err_percentile < 100:
+        ecol = 'FLUXERR_APER_0'
+        if ecol in cat:
+            emax = np.percentile(cat[ecol], max_err_percentile)
+            cat = cat[cat[ecol] < emax]
+            
     if hasattr(radec, 'upper'):
         rd_ref = np.loadtxt(radec)
+        radec_comment = radec
     elif radec is False:
         # Align to self, i.e., do nothing
         so = np.argsort(cat['MAG_AUTO'])
         rd_ref = np.array([cat['X_WORLD'], cat['Y_WORLD']]).T[so[:50],:]
+        radec_comment = 'self catalog'
     else:
         rd_ref = radec*1
+        radec_comment = 'input arrays (N={0})'.format(rd_ref.shape)
     
     ### Clip obviously distant files to speed up match
     # rd_cat = np.array([cat['X_WORLD'], cat['Y_WORLD']])
@@ -792,11 +801,12 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
             plt.ion()
         
     log_wcs(root, orig_wcs, out_shift, out_rot/np.pi*180, out_scale, rms,
-            n=NGOOD, initialize=False)
+            n=NGOOD, initialize=False, 
+            comment=['radec: {0}'.format(radec_comment)])
             
     return orig_wcs, drz_wcs, out_shift, out_rot/np.pi*180, out_scale
 
-def log_wcs(root, drz_wcs, shift, rot, scale, rms=0., n=-1, initialize=True):
+def log_wcs(root, drz_wcs, shift, rot, scale, rms=0., n=-1, initialize=True, comment=[]):
     """Save WCS offset information to a file
     """
     if (not os.path.exists('{0}_wcs.log'.format(root))) | initialize:
@@ -804,6 +814,9 @@ def log_wcs(root, drz_wcs, shift, rot, scale, rms=0., n=-1, initialize=True):
         orig_hdul = pyfits.HDUList()
         fp = open('{0}_wcs.log'.format(root), 'w')
         fp.write('# ext xshift yshift rot scale rms N\n')
+        for c in comment:
+            fp.write('# {0}\n'.format(c))
+            
         fp.write('# {0}\n'.format(root))
         count = 0
     else:
@@ -813,7 +826,7 @@ def log_wcs(root, drz_wcs, shift, rot, scale, rms=0., n=-1, initialize=True):
     
     hdu = drz_wcs.to_fits()[0]
     orig_hdul.append(hdu)
-    orig_hdul.writeto('{0}_wcs.fits'.format(root), clobber=True)
+    orig_hdul.writeto('{0}_wcs.fits'.format(root), overwrite=True)
     
     fp.write('{0:5d} {1:13.4f} {2:13.4f} {3:13.4f} {4:13.5f} {5:13.3f} {6:4d}\n'.format(
               count, shift[0], shift[1], rot, scale, rms, n))
@@ -866,8 +879,10 @@ SEXTRACTOR_DEFAULT_PARAMS = ["NUMBER", "X_IMAGE", "Y_IMAGE", "X_WORLD",
                     "MAG_AUTO", "MAGERR_AUTO", "FLUX_AUTO", "FLUXERR_AUTO",
                     "FLUX_RADIUS", "BACKGROUND", "FLAGS"]
 
+# Aperture *Diameters*
 SEXTRACTOR_PHOT_APERTURES = "6, 8.335, 16.337, 20"
-                    
+SEXTRACTOR_PHOT_APERTURES_ARCSEC = [float(ap)*0.06*u.arcsec for ap in SEXTRACTOR_PHOT_APERTURES.split(',')]
+                
 SEXTRACTOR_CONFIG_3DHST = {'DETECT_MINAREA':14, 'DEBLEND_NTHRESH':32, 'DEBLEND_MINCONT':0.005, 'FILTER_NAME':'/usr/local/share/sextractor/gauss_3.0_7x7.conv', 'FILTER':'Y'}
 
 # /usr/local/share/sextractor/gauss_3.0_7x7.conv
@@ -943,6 +958,7 @@ def make_SEP_catalog(root='',threshold=2., get_background=True,
                       source_xy=None, autoparams=[2.5, 3.5], mask_kron=False,
                       max_total_corr=2, err_scale=-np.inf, 
                       detection_params = SEP_DETECT_PARAMS, bkg_mask=None,
+                      pixel_scale=0.06, 
                       **kwargs):
     """Make a catalog from drizzle products using the SEP implementation of SExtractor
     
@@ -1001,9 +1017,20 @@ def make_SEP_catalog(root='',threshold=2., get_background=True,
     try:
         wcs = pywcs.WCS(drz_im[0].header)
         wcs_header = utils.to_header(wcs)
+        pixel_scale = utils.get_wcs_pscale(wcs)
     except:
         wcs = None
         wcs_header = drz_im[0].header.copy()
+        
+    if isinstance(phot_apertures, str):
+        apertures = np.cast[float](phot_apertures.replace(',','').split())
+    else:
+        apertures = []
+        for ap in phot_apertures:
+            if hasattr(ap, 'unit'):
+                apertures.append(ap.to(u.arcsec).value/pixel_scale)
+            else:
+                apertures.append(ap)
         
     if weight_file is not None:
         wht_im = pyfits.open(weight_file)
@@ -1306,7 +1333,6 @@ def make_SEP_catalog(root='',threshold=2., get_background=True,
     tab.meta['ERR_SCALE'] = (err_scale, 'Scale factor applied to weight image (like MAP_WEIGHT)')
     
     ## Photometry
-    apertures = np.cast[float](phot_apertures.replace(',','').split())
     for iap, aper in enumerate(apertures):
         flux, fluxerr, flag = sep.sum_circle(data - bkg_data, 
                                       source_x-1, source_y-1,
@@ -1335,6 +1361,8 @@ def make_SEP_catalog(root='',threshold=2., get_background=True,
         tab['mask_aper_{0}'.format(iap)] = flux
         
         tab.meta['aper_{0}'.format(iap)] = (aper, 'Aperture diameter, pix')
+        tab.meta['asec_{0}'.format(iap)] = (aper*pixel_scale, 
+                                            'Aperture diameter, arcsec')
     
     # If blended, use largest aperture magnitude
     if 'flag' in tab.colnames:    
@@ -1353,6 +1381,9 @@ def make_SEP_catalog(root='',threshold=2., get_background=True,
         
         tab['mag_auto'][blended] = aper_mag[blended]
         tab['magerr_auto'][blended] = aper_magerr[blended]
+        
+        # "ISO" mag, integrated within the segment
+        tab['mag_iso'] = 23.9-2.5*np.log10(tab['flux'])
         
     #if uppercase_columns:
     for c in tab.colnames:
@@ -1522,11 +1553,15 @@ def blot_background(visit={'product': '', 'files':None},
             flt_wcs = pywcs.WCS(flt['SCI',ext].header, fobj=flt, relax=True)
             flt_wcs.pscale = utils.get_wcs_pscale(flt_wcs)
             
-            blotted = astrodrizzle.ablot.do_blot(bkg_data.astype(np.float32),
-                            drz_wcs,
-                            flt_wcs, 1, coeffs=True, interp='nearest',
-                            sinscl=1.0, stepsize=10, wcsmap=None)
+            blotted = utils.blot_nearest_exact(bkg_data.astype(np.float32),
+                                               drz_wcs, flt_wcs,
+                                               scale_by_pixel_area=True)
             
+            # blotted = astrodrizzle.ablot.do_blot(bkg_data.astype(np.float32),
+            #                 drz_wcs,
+            #                 flt_wcs, 1, coeffs=True, interp='nearest',
+            #                 sinscl=1.0, stepsize=10, wcsmap=None)
+                        
             flt['SCI',ext].data -= blotted
             flt['SCI',ext].header['BLOTSKY'] = (True, 'Sky blotted from {0}'.format(drz_file))
         
@@ -1621,10 +1656,10 @@ def add_external_sources(root='', maglim=20, fwhm=0.2, catalog='2mass'):
     sci[0].data[clip] = flux[clip]
     
     sci.writeto(sci_file.replace('_drz', '_{0}_drz'.format(catalog)), 
-                clobber=True)
+                overwrite=True)
     
     wht.writeto(wht_file.replace('_drz', '_{0}_drz'.format(catalog)), 
-                clobber=True)  
+                overwrite=True)  
                         
     if False:
         # Mask
@@ -1869,7 +1904,8 @@ def gaia_dr2_conesearch_query(ra=165.86, dec=34.829694, radius=3., max=100000):
     return query
     
 def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
-                         use_mirror=True, max_wait=20):
+                         use_mirror=True, max_wait=20,
+                         max=100000):
     """Query GAIA DR2 astrometric catalog
     
     Parameters
@@ -1914,7 +1950,7 @@ def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
     #-------------------------------------
     #Create job
 
-    query =  gaia_dr2_conesearch_query(ra=ra, dec=dec, radius=radius) #"SELECT TOP 100000 * FROM gaiadr2.gaia_source  WHERE CONTAINS(POINT('ICRS',gaiadr2.gaia_source.ra,gaiadr2.gaia_source.dec),CIRCLE('ICRS',{0},{1},{2:.2f}))=1".format(ra, dec, radius/60.)
+    query =  gaia_dr2_conesearch_query(ra=ra, dec=dec, radius=radius, max=max) #"SELECT TOP 100000 * FROM gaiadr2.gaia_source  WHERE CONTAINS(POINT('ICRS',gaiadr2.gaia_source.ra,gaiadr2.gaia_source.dec),CIRCLE('ICRS',{0},{1},{2:.2f}))=1".format(ra, dec, radius/60.)
     print(query)
     
     params = urlencode({\
@@ -2012,8 +2048,180 @@ def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
     table = Table.read('gaia.fits', format='fits')
     return table
 
-def get_panstarrs_catalog(ra=0., dec=0., radius=3, columns='objName,objID,raStack,decStack,raStackErr,decStackErr,rMeanKronMag,rMeanKronMagErr,iMeanKronMag,iMeanKronMagErr', max_records=10000):
-    """TBD
+def gen_tap_box_query(ra=165.86, dec=34.829694, radius=3., max=100000, db='ls_dr7.tractor_primary', columns=['*'], rd_colnames=['ra','dec']):
+    """
+    Generate a query string for the NOAO Legacy Survey TAP server
+    TBD
+    
+    Parameters
+    ----------
+    ra, dec : float
+        RA, Dec in decimal degrees
+
+    radius : float
+        Search radius, in arc-minutes.
+    
+    Returns
+    -------
+    query : str
+        Query string
+        
+    """
+    #query =  "SELECT TOP {max} * FROM {table}  WHERE CONTAINS(POINT('ICRS',{table}.ra,{table}.dec),CIRCLE('ICRS',{ra},{dec},{rad:.2f}))=1".format(ra=ra, dec=dec, rad=radius/60., max=max, table='ls_dr7.tractor_primary')
+        
+    rmi = radius/60/2
+    cosd = np.cos(dec/180*np.pi)
+    
+    query =  """SELECT TOP {max} {output_columns} FROM {db}  WHERE {db}.{rc} > {left} AND {db}.{rc} < {right} AND {db}.{dc} > {bottom} AND {db}.{dc} < {top} """.format(rc=rd_colnames[0], dc=rd_colnames[1], left=ra-rmi/cosd, right=ra+rmi/cosd, top=dec+rmi, bottom=dec-rmi, max=max, db=db, output_columns=', '.join(columns))
+    
+    return query
+
+def query_tap_catalog(ra=165.86, dec=34.829694, radius=3., max_wait=20,
+                    db='ls_dr7.tractor_primary', columns=['*'], extra='',
+                    rd_colnames=['ra','dec'], 
+                    tap_url='http://datalab.noao.edu/tap',
+                    max=100000, clean_xml=True, verbose=True,
+                    des=False, gaia=False, nsc=False, vizier=False):
+    """Query NOAO Catalog holdings
+    
+    Parameters
+    ----------
+    ra, dec : float
+        Center of the query region, decimal degrees
+    
+    radius : float
+        Radius of the query, in arcmin
+    
+    db : str
+        Parent database (https://datalab.noao.edu/query.php).
+    
+    columns : list of str
+        List of columns to output.  Default ['*'] returns all columns.
+    
+    extra : str
+        String to add to the end of the positional box query, e.g., 
+        'AND mag_auto_i > 16 AND mag_auto_i < 16.5'.
+        
+    rd_colnames : str, str
+        Column names in `db` corresponding to ra/dec (degrees).
+
+    tap_url : str
+        TAP hostname
+        
+    des : bool
+        Query `des_dr1.main` from NOAO.
+    
+    gaia : bool
+        Query `gaiadr2.gaia_source` from http://gea.esac.esa.int.
+    
+    nsc : bool
+        Query the NOAO Source Catalog (Nidever et al. 2018), `nsc_dr1.object`.
+    
+    vizier : bool
+        Use the VizieR TAP server at  http://tapvizier.u-strasbg.fr/TAPVizieR/tap, see http://tapvizier.u-strasbg.fr/adql/about.html.
+        
+    Returns
+    -------
+    table : `~astropy.table.Table`
+        Result of the query
+    
+    """
+    from astroquery.utils.tap.core import TapPlus
+    
+    # DES DR1
+    if des:
+        if verbose:
+            print('Query DES DR1 from NOAO')
+        
+        db = 'des_dr1.main'
+        tap_url = 'http://datalab.noao.edu/tap'
+
+    # NOAO source catalog, seems to have some junk
+    if nsc:
+        if verbose:
+            print('Query NOAO source catalog')
+        
+        db = 'nsc_dr1.object'
+        tap_url = 'http://datalab.noao.edu/tap'
+        extra += ' AND nsc_dr1.object.flags = 0'
+        
+    # GAIA DR2     
+    if gaia:
+        if verbose:
+            print('Query GAIA DR2 from ESA')
+
+        db = 'gaiadr2.gaia_source'
+        tap_url = 'http://gea.esac.esa.int/tap-server/tap'
+    
+    # VizieR TAP server
+    if vizier:
+        if verbose:
+            print('Query {0} from VizieR TAP server'.format(db))
+
+        tap_url = 'http://tapvizier.u-strasbg.fr/TAPVizieR/tap'
+        rd_colnames = ['RAJ2000','DEJ2000']
+        
+    tap = TapPlus(url=tap_url)
+    
+    query =  gen_tap_box_query(ra=ra, dec=dec, radius=radius, max=max, 
+                               db=db, columns=columns,
+                               rd_colnames=rd_colnames)
+    
+    job = tap.launch_job(query+extra, dump_to_file=True, verbose=verbose)
+    try:
+        table = job.get_results()
+        if clean_xml:
+            os.remove(job.get_output_file())
+    
+        # Provide ra/dec columns
+        for c, cc in zip(rd_colnames, ['ra','dec']):
+            if (c in table.colnames) & (cc not in table.colnames):
+                table[cc] = table[c]
+            
+    except:
+        print('Query failed, check {0} for error messages'.format(job.get_output_file()))
+        table = None
+                
+    return table   
+
+def get_nsc_catalog(ra=0., dec=0., radius=3, max=100000, extra=' AND (rerr < 0.08 OR ierr < 0.08 OR zerr < 0.08) AND raerr < 0.2 AND decerr < 0.2', verbose=True):
+    """
+    Query NOAO Source Catalog, which is aligned to GAIA DR1.  
+    
+    The default `extra` query returns well-detected sources in red bands.
+    
+    """
+    print('Query NOAO Source Catalog ({ra:.5f},{dec:.5f},{radius:.1f}\')'.format(ra=ra, dec=dec, radius=radius))
+    
+    tab = query_tap_catalog(ra=ra, dec=dec, radius=radius, extra=extra, nsc=True, verbose=verbose)
+    return tab
+
+def get_desdr1_catalog(ra=0., dec=0., radius=3, max=100000, extra=' AND (magerr_auto_r < 0.15 OR magerr_auto_i < 0.15)', verbose=True):
+    """
+    Query DES DR1 Catalog.  
+    
+    The default `extra` query returns well-detected sources in one or more
+    red bands.
+    
+    """
+    print('Query DES Source Catalog ({ra:.5f},{dec:.5f},{radius:.1f}\')'.format(ra=ra, dec=dec, radius=radius))
+    
+    tab = query_tap_catalog(ra=ra, dec=dec, radius=radius, extra=extra, des=True, verbose=verbose)
+    return tab
+    
+def get_panstarrs_catalog(ra=0., dec=0., radius=3., max_records=500000, verbose=True, extra='AND "II/349/ps1".e_imag < 0.2 AND "II/349/ps1".e_RAJ2000 < 0.15 AND "II/349/ps1".e_DEJ2000 < 0.15'):
+    """
+    Get PS1 from Vizier
+    """
+    print('Query PanSTARRS catalog ({ra},{dec},{radius})'.format(ra=ra, dec=dec, radius=radius))
+    tab = query_tap_catalog(ra=ra, dec=dec, radius=radius*2, extra=extra, vizier=True, db='"II/349/ps1"', verbose=verbose)
+    return tab
+    
+def get_panstarrs_catalog_old(ra=0., dec=0., radius=3, columns='objName,objID,raMean,decMean,raStack,decStack,raStackErr,decStackErr,rMeanKronMag,rMeanKronMagErr,iMeanKronMag,iMeanKronMagErr', max_records=10000):
+    """
+    Get PS1 from STScI
+    
+    Need to get mean positions rather than stack positions!
     """
     try:
         import httplib
@@ -2044,7 +2252,7 @@ def get_panstarrs_catalog(ra=0., dec=0., radius=3, columns='objName,objID,raStac
     table['dec'] = table['decStack']
     return table[clip]
     
-def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, reference_catalogs = ['GAIA', 'PS1', 'SDSS', 'WISE'], **kwargs):
+def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, reference_catalogs = ['GAIA', 'PS1', 'NSC', 'SDSS', 'WISE', 'DES'], use_self_catalog=False, **kwargs):
     """Decide what reference astrometric catalog to use
     
     First search SDSS, then WISE looking for nearby matches.  
@@ -2065,7 +2273,8 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
     
     reference_catalogs : list
         Order in which to query reference catalogs.  Options are 'GAIA',
-        'PS1' (STScI PanSTARRS), 'SDSS', 'WISE'.
+        'PS1' (STScI PanSTARRS), 'SDSS', 'WISE', 'NSC' (NOAO Source Catalog), 
+        'DES' (Dark Energy Survey DR1).
         
     Returns
     -------
@@ -2081,7 +2290,9 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
                        'PS1':get_panstarrs_catalog,
                        'WISE':get_irsa_catalog,
                        '2MASS':get_twomass_catalog,
-                       'GAIA_Vizier':get_gaia_DR2_vizier}
+                       'GAIA_Vizier':get_gaia_DR2_vizier,
+                       'NSC':get_nsc_catalog,
+                       'DES':get_desdr1_catalog}
       
     ### Try queries
     has_catalog = False
@@ -2091,9 +2302,12 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
     for ref_src in reference_catalogs:
         try:
             if ref_src == 'GAIA':
-                ref_cat = query_functions[ref_src](ra=ra, dec=dec,
+                try:
+                    ref_cat = query_functions[ref_src](ra=ra, dec=dec,
                                              radius=radius, use_mirror=False)
-                
+                except:
+                    ref_cat = False
+                    
                 # Try GAIA mirror at Heidelberg
                 if ref_cat is False:
                     ref_cat = query_functions[ref_src](ra=ra, dec=dec,
@@ -2124,7 +2338,7 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
             print('{0} query failed'.format(ref_src))
             has_catalog = False
         
-    if (ref_src == 'GAIA') & ('date' in kwargs) & has_catalog:
+    if (ref_src.startswith('GAIA')) & ('date' in kwargs) & has_catalog:
         if kwargs['date'] is not None:        
             if 'date_format' in kwargs:
                 date_format = kwargs['date_format']
@@ -2161,7 +2375,7 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
     #### WISP, check if a catalog already exists for a given rootname and use 
     #### that if so.
     cat_files = glob.glob('-f1'.join(product.split('-f1')[:-1]) + '-f*.cat*')
-    if len(cat_files) > 0:
+    if (len(cat_files) > 0) & (use_self_catalog):
         ref_cat = utils.GTable.gread(cat_files[0])
         root = cat_files[0].split('.cat')[0]
         ref_cat['X_WORLD','Y_WORLD'].write('{0}.radec'.format(root),
@@ -2196,7 +2410,8 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
                                drizzle_params = {},
                                iter_atol=1.e-4,
                                imaging_bkg_params=None,
-                             reference_catalogs=['GAIA','PS1','SDSS','WISE']):
+                              reference_catalogs=['GAIA','PS1','SDSS','WISE'],
+                               use_self_catalog=False):
     """Full processing of a direct + grism image visit.
     
     TBD
@@ -2318,14 +2533,15 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
                             product=direct['product'],
                             reference_catalogs=reference_catalogs,
                             date=im[0].header['EXPSTART'],
-                            date_format='mjd')
+                            date_format='mjd', 
+                            use_self_catalog=use_self_catalog)
         
             if ref_catalog == 'VISIT':
                 align_mag_limits = [16,23]
             elif ref_catalog == 'SDSS':
                 align_mag_limits = [16,21]
             elif ref_catalog == 'PS1':
-                align_mag_limits = [16,22]
+                align_mag_limits = [16,24]
             elif ref_catalog == 'WISE':
                 align_mag_limits = [15,20]
         else:
@@ -2739,7 +2955,7 @@ def drizzle_footprint(weight_image, shrink=10, ext=0, outfile=None, label=None):
     fp.write(pstr+'\n')
     fp.close()
     
-def clean_drizzle(root, context=False):
+def clean_drizzle(root, context=False, fix_wcs_system=False):
     """Zero-out WHT=0 pixels in drizzle mosaics
     
     Parameters
@@ -2757,6 +2973,12 @@ def clean_drizzle(root, context=False):
     wht = pyfits.open(drz_file.replace('_sci.fits', '_wht.fits'))
     mask = wht[0].data == 0
     
+    if fix_wcs_system:
+        # Force RADESYS/EQUINOX = ICRS/2000. and fix LATPOLE to CRVAL2
+        sci[0].header['RADESYS'] = 'ICRS'
+        sci[0].header['EQUINOX'] = 2000.0
+        sci[0].header['LATPOLE'] =  sci[0].header['CRVAL2']
+        
     # Mask where context shows that mosaic comes from a single input
     ctx_file = drz_file.replace('_sci.','_ctx.')
     if context & os.path.exists(ctx_file):
@@ -2978,7 +3200,7 @@ def apply_tweak_shifts(wcs_ref, shift_dict, grism_matches={}, verbose=True):
     hdu = wcs_ref.to_fits(relax=True)
     file0 = list(shift_dict.keys())[0].split('.fits')[0]
     tweak_file = '{0}_tweak_wcs.fits'.format(file0)
-    hdu.writeto(tweak_file, clobber=True)
+    hdu.writeto(tweak_file, overwrite=True)
     for file in shift_dict:
         updatehdr.updatewcs_with_shift(file, tweak_file,
                                         xsh=shift_dict[file][0],
@@ -3125,7 +3347,7 @@ def match_direct_grism_wcs(direct={}, grism={}, get_fresh_flt=True,
         
         tmp_wcs = '/tmp/{0}_tmpwcs.fits'.format(str(direct['product']))
         ext = len(wcs_hdu)-1
-        wcs_hdu[ext].writeto(tmp_wcs, clobber=True)
+        wcs_hdu[ext].writeto(tmp_wcs, overwrite=True)
         
         for file in grism['files']:
             updatehdr.updatewcs_with_shift(file, tmp_wcs,
@@ -3147,7 +3369,7 @@ def match_direct_grism_wcs(direct={}, grism={}, get_fresh_flt=True,
     #### Get from WCS log file
     for ext in wcs_log['ext']:
         tmp_wcs = '/tmp/{0}_tmpwcs.fits'.format(str(direct['product']))
-        wcs_hdu[ext].writeto(tmp_wcs, clobber=True)
+        wcs_hdu[ext].writeto(tmp_wcs, overwrite=True)
         if 'scale' in wcs_log.colnames:
             scale = wcs_log['scale'][ext]
         else:
@@ -3822,7 +4044,7 @@ def find_single_image_CRs(visit, simple_mask=False, with_ctx_mask=True,
         
         flt.flush()
         
-def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, max_files=999, pixfrac=0.8, scale=0.06, skysub=True, skymethod='localmin', skyuser='MDRIZSKY', bits=None, final_wcs=True, final_rot=0, final_outnx=None, final_outny=None, final_ra=None, final_dec=None, final_wht_type='EXP', final_wt_scl='exptime', context=False, static=True):
+def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, max_files=999, pixfrac=0.8, scale=0.06, skysub=True, skymethod='localmin', skyuser='MDRIZSKY', bits=None, final_wcs=True, final_rot=0, final_outnx=None, final_outny=None, final_ra=None, final_dec=None, final_wht_type='EXP', final_wt_scl='exptime', context=False, static=True, use_group_footprint=False, fetch_flats=True, fix_wcs_system=False, include_saturated=False):
     """Combine overlapping visits into single output mosaics
     
     Parameters
@@ -3882,14 +4104,25 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
             
             if 'footprints' in group:
                 footprints = group['footprints']
+            elif ('footprint' in group) & use_group_footprint:
+                footprints = [group['footprint']]*len(group['files'])
             else:
                 footprints = []
                 files=group['files']
                 for i in range(len(files)):
                     print(i, files[i])
                     im = pyfits.open(files[i])
-                    wcs = pywcs.WCS(im[1])
-                    footprints.append(Polygon(wcs.calc_footprint()))
+                    p_i = None
+                    for ext in [1,2,3,4]:
+                        if ('SCI',ext) in im:
+                            wcs = pywcs.WCS(im['SCI',ext], fobj=im)
+                            fp_x = wcs.calc_footprint()
+                            if p_i is None:
+                                p_i = Polygon(fp_x)
+                            else:
+                                p_i = p_i.union(fp_x)
+                                
+                    footprints.append()
             
             ref = pyfits.getheader(group['reference'])
             wcs = pywcs.WCS(ref)
@@ -3898,16 +4131,52 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
             files = []
             out_fp = []
             
+            if 'awspath' in group:
+                aws = []
+                
             for j in range(len(group['files'])):
                 olap = ref_fp.intersection(footprints[j])
                 if olap.area > 0:
                     files.append(group['files'][j])
+                    if 'awspath' in group:
+                        aws.append(group['awspath'][j])
+                        
                     out_fp.append(footprints[j])
                     
             print(group['product'], len(files), len(group['files']))
             group['files'] = files
             group['footprints'] = out_fp
-            
+            if 'awspath' in group:
+                group['awspath'] = aws
+                
+            # Download the file from aws.  The 'awspath' entry
+            # is a list with the same length of 'files', and starts with 
+            # the bucket name.
+            if 'awspath' in group:
+                import boto3
+                session = boto3.Session()
+                s3 = boto3.resource('s3')
+                
+                bkt = None
+                for awspath, file in zip(group['awspath'], group['files']):
+                    if os.path.exists(file):
+                        continue
+                    
+                    spl = awspath.split('/')    
+                    bucket_name=spl[0]
+                    path_to_file = '/'.join(spl[1:])
+
+                    if bkt is None:
+                        bkt = s3.Bucket(bucket_name)
+                    else:
+                        if bkt.name != bucket_name:
+                            bkt = s3.Bucket(bucket_name)
+                                                
+                    s3_file = (path_to_file+'/'+file).replace('//','/')
+                    print('Fetch from s3:  s3://{0}/{1}'.format(bucket_name, s3_file))
+                    bkt.download_file(s3_file, file,
+                                    ExtraArgs={"RequestPayer": "requester"})
+                
     if max_files > 0:
         all_groups = []
         for group in exposure_groups:
@@ -3916,7 +4185,7 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
                 all_groups.append(group)
             else:
                 for k in range(N):
-                    sli = slice(k*999,(k+1)*999)
+                    sli = slice(k*max_files,(k+1)*max_files)
                     files_list = group['files'][sli]
                     root='{0}-{1:03d}'.format(group['product'], k)
                     g_k = OrderedDict(product=root,
@@ -3941,9 +4210,23 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
                 bits = 64+32
             else:
                 bits = 576
-        
+            
+            if include_saturated:
+                bits |= 256
+                
+        # All the same instrument?
         inst_keys = np.unique([os.path.basename(file)[0] for file in group['files']])
         
+        if fetch_flats:
+            # PFL files needed for IVM weights
+            for file in group['files']: 
+                try:
+                    utils.fetch_hst_calibs(file, calib_types=['PFLTFILE'],
+                                       verbose=False)  
+                except:
+                    pass
+                    
+        # Fetch files from aws
         if 'reference' in group:
             AstroDrizzle(group['files'], output=group['product'],
                      clean=True, context=context, preserve=False,
@@ -3974,7 +4257,7 @@ def drizzle_overlaps(exposure_groups, parse_visits=False, check_overlaps=True, m
                      final_outnx=final_outnx, final_outny=final_outny,
                      resetbits=0, static=(static & (len(inst_keys) == 1)))
         
-        clean_drizzle(group['product'])
+        clean_drizzle(group['product'], fix_wcs_system=fix_wcs_system)
 
 def manual_alignment(visit, ds9, reference=None, reference_catalogs=['SDSS', 'PS1', 'GAIA', 'WISE'], use_drz=False):
     """Manual alignment of a visit with respect to an external region file
@@ -4069,4 +4352,45 @@ def manual_alignment(visit, ds9, reference=None, reference_catalogs=['SDSS', 'PS
         dy *+ -1
         
     np.savetxt('{0}.align_guess'.format(visit['product']), [[dx, dy, 0, 1].__repr__()[1:-1].replace(',', '')], fmt='%s')
+
+def extract_fits_log(file='idk106ckq_flt.fits', get_dq=True):
+    log = OrderedDict()
+    im = pyfits.open(file)
+    
+    for k in im[0].header:
+        if k  in ['HISTORY','COMMENT','ORIGIN','']: 
+            continue
         
+        if k.strip().startswith('/'):
+            continue
+                
+        log[k] = im[0].header[k]
+    
+    log['chips'] = []
+    
+    if get_dq:
+        idx = np.arange(1014**2, dtype=np.int32).reshape((1014,1014))
+        
+    for chip in [1,2,3,4]:
+        key = 'SCI{0}'.format(chip)
+        if ('SCI',chip) in im:
+            log['chips'].append(chip)
+            log[key] = OrderedDict()
+            h = im['SCI',chip].header
+            for k in h:
+                if k  in ['HISTORY','COMMENT','ORIGIN','']: 
+                    continue
+
+                if k.strip().startswith('/'):
+                    continue
+
+                log[key][k] = h[k]
+            
+            if get_dq:
+                dq = im['DQ',chip].data
+                mask = dq > 0
+                log['DQi{0}'.format(chip)] = list(idx[mask].astype(str))
+                log['DQv{0}'.format(chip)] = list(dq[mask].astype(str))
+    
+    return log
+    

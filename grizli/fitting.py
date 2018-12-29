@@ -70,7 +70,7 @@ def run_all_parallel(id, get_output_data=False, **kwargs):
     
     return id, status, t1-t0
     
-def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter='nnls', group_name='grism', fit_stacks=True, only_stacks=False, prior=None, fcontam=0.2, pline=PLINE, mask_sn_limit=3, fit_only_beams=False, fit_beams=True, root='*', fit_trace_shift=False, phot=None, phot_obj=None, verbose=True, scale_photometry=False, show_beams=True, scale_on_stacked_1d=True, overlap_threshold=5, MW_EBV=0., sys_err=0.03, get_dict=False, bad_pa_threshold=1.6, units1d='flam', redshift_only=False, line_size=1.6, use_psf=False, get_line_width=False, sed_args={'bin':1, 'xlim':[0.3, 9]}, **kwargs):
+def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter='nnls', group_name='grism', fit_stacks=True, only_stacks=False, prior=None, fcontam=0.2, pline=PLINE, mask_sn_limit=3, fit_only_beams=False, fit_beams=True, root='*', fit_trace_shift=False, phot=None, phot_obj=None, verbose=True, scale_photometry=False, show_beams=True, scale_on_stacked_1d=True, overlap_threshold=5, MW_EBV=0., sys_err=0.03, get_dict=False, bad_pa_threshold=1.6, units1d='flam', redshift_only=False, line_size=1.6, use_psf=False, get_line_width=False, sed_args={'bin':1, 'xlim':[0.3, 9]}, get_ir_psfs=True, min_mask=0.01, min_sens=0.08, **kwargs):
     """Run the full procedure
     
     1) Load MultiBeam and stack files 
@@ -97,7 +97,7 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     st_files = glob.glob('{0}_{1:05d}.stack.fits'.format(root, id))
     
     if not only_stacks:
-        mb = MultiBeam(mb_files, fcontam=fcontam, group_name=group_name, MW_EBV=MW_EBV, sys_err=sys_err, verbose=verbose, psf=use_psf)
+        mb = MultiBeam(mb_files, fcontam=fcontam, group_name=group_name, MW_EBV=MW_EBV, sys_err=sys_err, verbose=verbose, psf=use_psf, min_mask=min_mask, min_sens=min_sens)
         # Check for PAs with unflagged contamination or otherwise discrepant
         # fit
         out = mb.check_for_bad_PAs(chi2_threshold=bad_pa_threshold,
@@ -169,10 +169,10 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
             mb.set_photometry(**phot, min_err=sys_err)
             
     if t0 is None:
-        t0 = grizli.utils.load_templates(line_complexes=True, fsps_templates=True, fwhm=fwhm)
+        t0 = utils.load_templates(line_complexes=True, fsps_templates=True, fwhm=fwhm)
     
     if t1 is None:
-        t1 = grizli.utils.load_templates(line_complexes=False, fsps_templates=True, fwhm=fwhm)
+        t1 = utils.load_templates(line_complexes=False, fsps_templates=True, fwhm=fwhm)
         
     # Fit on stacked spectra or individual beams
     if fit_only_beams:
@@ -295,7 +295,7 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
             mb.set_photometry(**phot)
         
     # Best-fit template itself
-    tfit_sp = grizli.utils.GTable()
+    tfit_sp = utils.GTable()
     for ik, key in enumerate(tfit['cfit']):
         for save in [tfit_sp.meta]:
             save['CVAL{0:03d}'.format(ik)] = tfit['cfit'][key][0], 'Coefficient for {0}'.format(key)
@@ -338,7 +338,7 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     if pline is None:
          pzfit, pspec2, pline = grizli.multifit.get_redshift_fit_defaults()
     
-    line_hdu = mb.drizzle_fit_lines(tfit, pline, force_line=['SIII','SII','Ha', 'OIII', 'Hb', 'OII', 'Lya'], save_fits=False, mask_lines=True, mask_sn_limit=mask_sn_limit, verbose=verbose)
+    line_hdu = mb.drizzle_fit_lines(tfit, pline, force_line=utils.DEFAULT_LINE_LIST, save_fits=False, mask_lines=True, mask_sn_limit=mask_sn_limit, verbose=verbose, get_ir_psfs=get_ir_psfs)
     
     # Add beam exposure times
     exptime = mb.compute_exptime()
@@ -2422,7 +2422,7 @@ class GroupFitter(object):
         # 
         #     return fig, sfit
     
-    def oned_figure(self, bin=1, show_beams=True, minor=0.1, tfit=None, axc=None, figsize=[6,4], fill=False, units='flam', min_sens=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False):
+    def oned_figure(self, bin=1, show_beams=True, minor=0.1, tfit=None, axc=None, figsize=[6,4], fill=False, units='flam', min_sens_show=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False, apply_beam_mask=True):
         """
         1D figure
         1D figure
@@ -2446,7 +2446,7 @@ class GroupFitter(object):
         units : 'flam', 'nJy', 'mJy', 'eps', 'meps'
             Plot units. 
             
-        min_sens : type
+        min_sens_show : type
         
         ylim_percentile : float
         
@@ -2505,6 +2505,11 @@ class GroupFitter(object):
         
         for i in range(self.N):
             beam = self.beams[i]
+            if apply_beam_mask:
+                b_mask = beam.fit_mask.reshape(beam.sh)
+            else:
+                b_mask = 1
+                
             if tfit is not None:
                 m_i = beam.compute_model(spectrum_1d=sp, is_cgs=True, in_place=False).reshape(beam.sh)
             
@@ -2522,26 +2527,26 @@ class GroupFitter(object):
                 clean = beam.grism['SCI'] - beam.contam 
                 if tfit is not None:
                     clean -= tfit['cfit']['bg {0:03d}'.format(i)][0]
-                    w, flm, erm = beam.beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar)
+                    w, flm, erm = beam.beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar*b_mask)
                 
                 if mspl is not None:
-                    w, flspl, erm = beam.beam.optimal_extract(mspl_i, bin=bin, ivar=beam.ivar)
+                    w, flspl, erm = beam.beam.optimal_extract(mspl_i, bin=bin, ivar=beam.ivar*b_mask)
                         
-                w, fl, er = beam.beam.optimal_extract(clean, bin=bin, ivar=beam.ivar)            
-                w, sens, ers = beam.beam.optimal_extract(f_i, bin=bin, ivar=beam.ivar)
+                w, fl, er = beam.beam.optimal_extract(clean, bin=bin, ivar=beam.ivar*b_mask)            
+                w, sens, ers = beam.beam.optimal_extract(f_i, bin=bin, ivar=beam.ivar*b_mask)
                 #sens = beam.beam.sensitivity                
             else:
                 grism = beam.grism
                 clean = beam.sci - beam.contam
                 if tfit is not None:
                     clean -= - tfit['cfit']['bg {0:03d}'.format(i)][0]
-                    w, flm, erm = beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar)
+                    w, flm, erm = beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar*b_mask)
                     
                 if mspl is not None:
-                    w, flspl, erm = beam.beam.optimal_extract(mspl_i, bin=bin, ivar=beam.ivar)
+                    w, flspl, erm = beam.beam.optimal_extract(mspl_i, bin=bin, ivar=beam.ivar*b_mask)
                     
-                w, fl, er = beam.optimal_extract(clean, bin=bin, ivar=beam.ivar)            
-                w, sens, ers = beam.optimal_extract(f_i, bin=bin, ivar=beam.ivar)
+                w, fl, er = beam.optimal_extract(clean, bin=bin, ivar=beam.ivar*b_mask)            
+                w, sens, ers = beam.optimal_extract(f_i, bin=bin, ivar=beam.ivar*b_mask)
                 
                 #sens = beam.sens
             
@@ -2576,7 +2581,7 @@ class GroupFitter(object):
             
             w = w/1.e4
             
-            clip = (sens > min_sens*sens.max()) 
+            clip = (sens > min_sens_show*sens.max()) 
             clip &= (er > 0)
             if clip.sum() == 0:
                 continue
@@ -3039,8 +3044,13 @@ class GroupFitter(object):
         res = [out.x[0], out.x[1], out.x[2], out.nfev, out.nfev == max_nfev]
         return res
     
-def show_drizzled_lines(line_hdu, full_line_list=['OII', 'Hb', 'OIII', 'Ha', 'SII', 'SIII'], size_arcsec=2, cmap='cubehelix_r', scale=1., dscale=1):
+def show_drizzled_lines(line_hdu, full_line_list=['OII', 'Hb', 'OIII', 'Ha', 'SII', 'SIII'], size_arcsec=2, cmap='cubehelix_r', scale=1., dscale=1, direct_filter=['F140W','F160W','F125W','F105W','F110W','F098M']):
     """TBD
+    
+    `direct_filter` : list
+        Filter preference to show in the direct image panel.  Step through 
+        and stop if the indicated filter is available.
+        
     """
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MultipleLocator
@@ -3050,6 +3060,9 @@ def show_drizzled_lines(line_hdu, full_line_list=['OII', 'Hb', 'OIII', 'Ha', 'SI
         if line in line_hdu[0].header['HASLINES'].split():
             show_lines.append(line)
     
+    if full_line_list == 'all':
+        show_lines = line_hdu[0].header['HASLINES'].split()
+        
     #print(line_hdu[0].header['HASLINES'], show_lines)
     
     NL = len(show_lines)
@@ -3058,9 +3071,21 @@ def show_drizzled_lines(line_hdu, full_line_list=['OII', 'Hb', 'OIII', 'Ha', 'SI
     
     # Direct
     ax = fig.add_subplot(1,NL+1,1)
-    ax.imshow(line_hdu['DSCI'].data*dscale, vmin=-0.02, vmax=0.6, cmap=cmap, origin='lower')
+    
+    dext = 'DSCI'
+    # Try preference for direct filter
+    for filt in direct_filter:
+        if ('DSCI',filt) in line_hdu:
+            dext = 'DSCI',filt
+            break
+            
+    ax.imshow(line_hdu[dext].data*dscale, vmin=-0.02, vmax=0.6, cmap=cmap, origin='lower')
     ax.set_title('Direct   {0}    z={1:.3f}'.format(line_hdu[0].header['ID'], line_hdu[0].header['REDSHIFT']))
     
+    if 'FILTER' in line_hdu[dext].header:
+        ax.text(0.03, 0.97, line_hdu[dext].header['FILTER'],
+                transform=ax.transAxes, ha='left', va='top', fontsize=8)
+        
     ax.set_xlabel('RA'); ax.set_ylabel('Decl.')
 
     # 1" ticks
