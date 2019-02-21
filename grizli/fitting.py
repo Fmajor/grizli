@@ -97,6 +97,7 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     st_files = glob.glob('{0}_{1:05d}.stack.fits'.format(root, id))
     
     if not only_stacks:
+        print('mb_files include: ', mb_files)   #<<181229>> XW
         mb = MultiBeam(mb_files, fcontam=fcontam, group_name=group_name, MW_EBV=MW_EBV, sys_err=sys_err, verbose=verbose, psf=use_psf, min_mask=min_mask, min_sens=min_sens)
         # Check for PAs with unflagged contamination or otherwise discrepant
         # fit

@@ -1230,6 +1230,7 @@ class MultiBeam(GroupFitter):
         if isinstance(beams, str):
             self.load_master_fits(beams, verbose=verbose)            
         else:
+            print('beams include: ', beams)     #<<181229>> XW
             if isinstance(beams[0], str):
                 ### `beams` is list of strings
                 if 'beams.fits' in beams[0]:

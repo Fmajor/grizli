@@ -133,7 +133,7 @@ def get_flt_info(files=[], columns=['FILE', 'FILTER', 'INSTRUME', 'DETECTOR', 'T
                 continue
                 
         data.append(line)
-    
+
     tab = Table(rows=data, names=has_columns)
     return tab
 
