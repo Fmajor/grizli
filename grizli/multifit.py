@@ -1739,7 +1739,7 @@ class MultiBeam():
         fit_data['model1d'] = model1d
         fit_data['cont1d'] = cont1d
         fit_data['line1d'] = line1d
-        fit_data['fscl'] = fscl     #<<170303>> added by Xin
+        fit_data['fscl'] = fscl     #<<170303>> added by Xin, NOTE: this fscl only corresp to self.beams[0].beam.total_flux/1.e-17!
         fit_data['Ngrism'] = self.Ngrism    #<<170303>> added by Xin
         
         #return fit_data
@@ -1882,10 +1882,12 @@ class MultiBeam():
         wfull = {}
         ffull = {}
         efull = {}
+        mfull = {}
         for grism in grisms:
             wfull[grism] = []
             ffull[grism] = []
             efull[grism] = []
+            mfull[grism] = []
         
         for ib in range(self.N):
             beam = self.beams[ib]
@@ -1957,15 +1959,17 @@ class MultiBeam():
             wfull[grism] = np.append(wfull[grism], wave[okerr])
             ffull[grism] = np.append(ffull[grism], flux[okerr])
             efull[grism] = np.append(efull[grism], err[okerr])
-                
+            mfull[grism] = np.append(mfull[grism], mflux[okerr])
+
         if return_1Dextraction:
             print(' -   >   >   updating fit_data with 1D optimal extraction')
             fit_data['wfull'] = wfull
             fit_data['ffull'] = ffull
             fit_data['efull'] = efull
             fit_data['plot_flambda'] = plot_flambda
+            fit_data['mfull'] = mfull
 
-        for grism in grisms:                        
+        for grism in grisms:
             if self.Ngrism[grism] > 1:
                 ## binned
                 okb = (np.isfinite(wfull[grism]) & np.isfinite(ffull[grism]) &
