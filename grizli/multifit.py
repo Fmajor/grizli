@@ -608,7 +608,7 @@ class GroupFLT():
         return out_beams
     
     def refine_list(self, ids=[], mags=[], poly_order=2, mag_limits=[16,24], 
-                    max_coeff=5, ds9=None, verbose=True):
+                    max_coeff=5, ds9=None, nFLT=0, verbose=True):
         """TBD
         
         bright = self.catalog['MAG_AUTO'] < 24
@@ -633,10 +633,10 @@ class GroupFLT():
             
         for id, mag in zip(ids, mags):
             self.refine(id, mag=mag, poly_order=poly_order,
-                        max_coeff=max_coeff, size=30, ds9=ds9,
+                        max_coeff=max_coeff, size=30, ds9=ds9, nFLT=nFLT,   # Index of FLT file to be displayed via pyds9 <<190718>>
                         verbose=verbose)
             
-    def refine(self, id, mag=-99, poly_order=1, size=30, ds9=None, verbose=True, max_coeff=2.5):
+    def refine(self, id, mag=-99, poly_order=1, size=30, ds9=None, nFLT=0, verbose=True, max_coeff=2.5):
         """TBD
         """
         beams = self.get_beams(id, size=size, min_overlap=0.5, get_slice_header=False)
@@ -658,11 +658,14 @@ class GroupFLT():
         self.compute_single_model(id, mag=mag, size=-1, store=False, spectrum_1d=[(xspec+1)*1.e4, np.sum(yspec, axis=0)], get_beams=None, in_place=True)
         
         if ds9:
-            flt = self.FLTs[0]
-            mask = flt.grism['SCI'] != 0
-            ds9.view((flt.grism['SCI'] - flt.model)*mask,
-                      header=flt.grism.header)
-        
+            try:
+                flt = self.FLTs[nFLT]           # Index of FLT file to be displayed via pyds9 <<190718>>
+                mask = flt.grism['SCI'] != 0
+                ds9.view((flt.grism['SCI'] - flt.model) * mask,
+                         header=flt.grism.header)
+            except:
+                 pass
+
         if verbose:
             print('{0} mag={1:6.2f} {2}'.format(id, mag, scale_coeffs))
             
