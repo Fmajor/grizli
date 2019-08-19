@@ -899,10 +899,10 @@ class MultiBeam():
 
         self.Ngrism = {}
         for i in range(self.N):
-            if self.beams[i].grism.instrument == 'NIRISS':
-                grism = self.beams[i].grism.pupil
-            else:
-                grism = self.beams[i].grism.filter
+            # if self.beams[i].grism.instrument == 'NIRISS':
+            #     grism = self.beams[i].grism.pupil
+            # else:
+            grism = self.beams[i].grism.filter      # modified by Xin Wang <<190818>>
                 
             if grism in self.Ngrism:
                 self.Ngrism[grism] += 1
@@ -914,10 +914,10 @@ class MultiBeam():
             self.PA[g] = {}
             
         for i in range(self.N):
-            if self.beams[i].grism.instrument == 'NIRISS':
-                grism = self.beams[i].grism.pupil
-            else:
-                grism = self.beams[i].grism.filter
+            # if self.beams[i].grism.instrument == 'NIRISS':
+            #     grism = self.beams[i].grism.pupil
+            # else:
+            grism = self.beams[i].grism.filter      # modified by Xin Wang <<190818>>
 
             PA = self.beams[i].get_dispersion_PA(decimals=0)
             if PA in self.PA[grism]:
@@ -1953,10 +1953,10 @@ class MultiBeam():
             ax.errorbar(wave[okerr]/1.e4, flux[okerr], err[okerr], alpha=0.15+0.2*(self.N <= 2), linestyle='None', marker='.', color='{0:.2f}'.format(ib*0.5/self.N), zorder=1)
             ax.plot(wave[okerr]/1.e4, mflux[okerr], color='r', alpha=0.5, zorder=3)
             
-            if beam.grism.instrument == 'NIRISS':
-                grism = beam.grism.pupil
-            else:
-                grism = beam.grism.filter
+            # if beam.grism.instrument == 'NIRISS':
+            #     grism = beam.grism.pupil
+            # else:
+            grism = beam.grism.filter      # modified by Xin Wang <<190818>>
                 
             #for grism in grisms:
             wfull[grism] = np.append(wfull[grism], wave[okerr])
@@ -1993,9 +1993,9 @@ class MultiBeam():
                 fbin /= wht_bin
                 wbin /= wht_bin
                 #vbin = 1./wht_bin
-                
+
                 ax.errorbar(wbin/1.e4, fbin, np.sqrt(vbin), alpha=0.8,
-                            linestyle='None', marker='.', 
+                            linestyle='None', marker='.',
                             color=grism_colors[grism], zorder=2)
 
                 med_err = np.median(np.sqrt(vbin))

@@ -128,7 +128,9 @@ def niriss_header(ra=53.1592277508136, dec=-27.782056346146, pa_aper=128.589,
         
     wcs = pywcs.WCS(h)
     h['EXTVER'] = 1
-        
+    h['PUPIL'] = h['GRISM']     # added by Xin Wang <<190818>>
+                                # in `~model.GrismFLT()` section of "### Grism configuration", 'PUPIL' is used to set up 'GRISM'
+
     return h, wcs
 
 def nircam_header(ra=53.1592277508136, dec=-27.782056346146, pa_aper=128.589, 
