@@ -216,8 +216,8 @@ def _loadFLT(grism_file, sci_extn, direct_file, pad, ref_file,
     else:
         flt.catalog = None 
 
-    if flt.grism.instrument == 'NIRISS':
-        flt.transform_NIRISS()
+    # if flt.grism.instrument == 'NIRISS':
+    #     flt.transform_NIRISS()
         
     return flt #, out_cat
     
