@@ -1,0 +1,267 @@
+# Full Grizli pipeline arguments
+
+filters: &filters 
+    [F410M, F467M, F547M, F550M, F621M, F689M, F763M, F845M, F200LP, F350LP,
+     F435W, F438W, F439W, F450W, F475W, F475X, F555W, F569W, F600LP, F606W,
+     F622W, F625W, F675W, F702W, F775W, F791W, F814W, F850LP, G800L, F098M,
+     F127M, F139M, F153M, F105W, F110W, F125W, F140W, F160W, G102, G141]
+
+# Arguments to grizli.pipeline.fetch_files
+fetch_files_args: 
+    reprocess_parallel: False 
+    reprocess_clean_darks: True
+    remove_bad: True
+    min_bad_expflag: 2 
+    s3_sync: True
+    #filters: *filters
+    fetch_flt_calibs: [IDCTAB, PFLTFILE, NPOLFILE]
+    inst_products: 
+        ACS/WFC: [FLC]
+        WFC3/IR: [RAW]
+        WFC3/UVIS: [FLC]
+        WFPC2/PC: [C0M, C1M]
+        WFPC2/WFC: [C0M, C1M]
+
+# Manual inspection of the IR ramps
+inspect_ramps: False 
+
+# Split DASH exposures using wfc3dash
+is_dash: &is_dash False 
+
+# Parse 
+run_parse_visits: True 
+is_parallel_field: &is_parallel_field False
+
+# Arguments to grizli.pipeline.fetch_files
+parse_visits_args: 
+    combine_minexp: 2 
+    combine_same_pa: -1
+    #filters: *filters
+    #is_dash: *is_dash
+    use_visit: True
+    max_dt: 0.5
+    
+# Run manual alignment for each visit using prep.manual_alignment
+manual_alignment: False 
+manual_alignment_args: 
+    skip: True
+    catalogs: [GAIA]
+    radius: 15
+    visit_list: null
+    radec: null
+
+####
+# Preprocessing
+preprocess_args: 
+    min_overlap: 0.2 
+    master_radec: null 
+    parent_radec: null 
+    use_visit: True
+    make_combined: False
+    skip_single_optical_visits: False 
+    use_first_radec: False
+    skip_imaging: False
+    clean: True
+    
+# Arguments to grizli.prep.process_direct_grism_visit for each visit    
+visit_prep_args: &prep_args
+    align_thresh: null
+    align_rms_limit: 2
+    align_mag_limits: [14, 24, 0.05]
+    max_err_percentile: 99
+    catalog_mask_pad: 0.05
+    match_catalog_density: None
+    drizzle_params: {}
+    single_image_CRs: True
+    run_tweak_align: True
+    tweak_threshold: 1.5
+    tweak_fit_order: -1
+    tweak_max_dist: 100
+    tweak_n_min: 10
+    align_simple: False
+    align_clip: 120
+    column_average: True
+    sky_iter: 10
+    iter_atol: 0.0001
+    imaging_bkg_params: {bh: 128, bw: 128, fh: 3, fw: 3, pixel_scale: 0.06, get_median: False}
+    fix_stars: True
+    reference_catalogs: [PS1, DES, DSC, SDSS, GAIA, WISE]
+    outlier_threshold: 4
+    # use_self_catalog: *is_parallel_field
+
+# Arguments to prep.apply_persistence_mask
+redo_persistence_mask: False
+
+persistence_args:
+    dq_value: 1024
+    err_threshold: 0.5
+    grow_mask: 3
+    verbose: True
+    reset: False
+            
+# Fine alignment
+run_fine_alignment: True 
+fine_backup: True
+fine_alignment_args:
+    min_overlap: 0.2
+    stopme: False
+    ref_err: 0.08
+    radec: null 
+    catalogs: [GAIA,PS1,DES,SDSS]
+    radius: 30
+    gaia_by_date: True
+    NITER: 1
+    maglim: [17,23]
+    shift_only: True
+    method: Powell
+    redrizzle: False
+    program_str: null
+    match_str: []
+    all_visits: null
+    date: null
+    tol: null
+    fit_options: null
+    print_options: {precision: 3, sign: ' '}
+    
+# Combined mosaics
+make_mosaics: True 
+mosaic_args:
+    combine_all_filters: False 
+    ir_filters: 
+        [F105W, F110W, F125W, F140W, F160W, F098M, F139M, F127M, F153M]
+    optical_filters:
+        [F814W, F606W, F435W, F850LP, F702W, F555W, F438W, F475W, F625W,
+          F775W, F225W, F275W, F300W, F390W, F350LP, F200LP, F410M, F450W,
+          F600LP, F475X, F435W]
+    fill_mosaics: grism 
+    half_optical_pixscale: False 
+    mosaic_pixfrac: 0.75 
+    wcs_params: 
+        pad_reference: 60
+        filters: 
+            [F410M, F467M, F547M, F550M, F621M, F689M, F763M, F845M, F200LP,
+            F350LP, F390W, F435W, F438W, F439W, F450W, F475W, F475X, F555W,
+            F569W, F600LP, F606W, F622W, F625W, F675W, F702W, F775W, F791W,
+            F814W, F850LP, G800L, F098M, F127M, F139M, F153M, F105W, F110W,
+            F125W, F140W, F160W, G102, G141, F600LP, F475X]
+        pixel_scale: null 
+        
+# Mask IR difraction spikes
+mask_spikes: False 
+
+# Multiband photometric catalog
+make_phot: True 
+multiband_catalog_args: 
+    threshold: 1.0
+    detection_background: True
+    detection_filter: ir
+    detection_root: null
+    output_root: null
+    photometry_background: True
+    get_all_filters: False
+    run_detection: True
+    use_psf_filter: True
+    detection_params: null
+    phot_apertures: null
+    bkg_mask: null
+    bkg_params: {bw: 64, bh: 64, fw: 3, fh: 3, pixel_scale: 0.06}
+    use_bkg_err: False
+    aper_segmask: True
+    rescale_weight: False
+
+# Stop after image preparation even if grism exists    
+only_preprocess: False 
+
+# Overwrite fit_args.npy if it exists
+overwrite_fit_params: False
+
+# If continuing with grism, compute grism contamination model
+grism_prep_args: 
+    gris_ref_filters: &gris_ref_filters
+        G102: [F105W, F098M, F110W, F125W, F140W, F160W, F127M, F139M, 
+               F153M, F132N, F130N, F128N, F126N, F164N, F167N]
+        G141: [ir, F140W, F160W, F125W, F105W, F110W, F098M, F127M, F139M, 
+               F153M, F132N, F130N, F128N, F126N, F164N, F167N]
+        G800L: [opt, ir, F814W, F850LP, F606W, F435W, F775W]
+    files: null
+    grisms_to_process: null
+    split_by_grism: True
+    refine_niter: 3
+    refine_poly_order: 3
+    refine_fcontam: 0.5
+    ds9: null
+    mask_mosaic_edges: True
+
+refine_with_fits: False
+run_extractions: False 
+include_photometry_in_fit: False
+
+# RGB thumbnails based on spectral extractions
+make_thumbnails: False
+
+thumb_rgb_params: &thumb_rgb_params 
+  add_labels: false
+  mask_empty: false
+  output_dpi: null
+  output_format: png
+  pl: 1
+  rgb_min: -0.01
+  scl: 2
+  show_ir: false
+  suffix: .rgb
+  tick_interval: 1
+  xsize: 4
+
+drizzler_args: &drizzler_args
+  aws_bucket: false
+  filters: [f160w, f140w, f125w, f105w, f110w, f098m, 
+            f850lp, f814w, f775w, f606w, f475w, f435w,
+            f555w, f600lp, f390w, f350lp]
+  half_optical_pixscale: true
+  include_ir_psf: true
+  kernel: square
+  pixfrac: 0.33
+  pixscale: 0.1
+  remove: false
+  rgb_params: *thumb_rgb_params
+  scale_ab: 21.5
+  size: 6
+  subtract_median: true
+  theta: 0.0
+  thumb_height: 1.5
+  show_filters: [visb, visr, y, j, h]
+  combine_similar_filters: true
+                 
+thumbnail_args: 
+    ids: extracted
+    maglim: 21
+    min_filters: 2
+    drizzler_args: *drizzler_args
+    use_line_wcs: True
+    auto_size: True
+    size_limits: [4,15]
+    remove_fits: -1
+    skip: True
+    mag: null
+    make_segmentation_figure: True
+
+# Arguments for spectral extractions
+# def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00, ids=None, pline=DITHERED_PLINE, fit_only_beams=True, run_fit=True, poly_order=7, master_files=None, grp=None, bad_pa_threshold=None, fit_trace_shift=False, size=32, diff=True, min_sens=0.02, skip_complete=True, fit_args={}):
+
+extract_args: 
+    maglim: [17,26]
+    ids: []
+    poly_order: 7
+    oned_R: 30
+    bad_pa_threshold: null
+    fit_trace_shift: False
+    size: 32
+    diff: True
+    MW_EBV: 0.0
+    skip_complete: True
+    run_fit: False
+    args_file: fit_args.npy
+    
+extract_maglim: [17,26] 
+run_fit: False 
+ 
