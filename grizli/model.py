@@ -19,8 +19,8 @@ import astropy.units as u
 ### Helper functions from a document written by Pirzkal, Brammer & Ryan 
 from . import grismconf
 from . import utils
-from .utils_c import disperse
-from .utils_c import interp
+# from .utils_c import disperse
+# from .utils_c import interp
 from . import GRIZLI_PATH
 
 # Would prefer 'nearest' but that occasionally segment faults out
@@ -285,6 +285,8 @@ class GrismDisperser(object):
         Sets attributes that define how the dispersion is computed.  See the 
         attributes list for `~grizli.model.GrismDisperser`.
         """        
+        from .utils_c import interp
+
         ### Get dispersion parameters at the reference position
         self.dx = self.conf.dxlam[self.beam] #+ xcenter #-xoff
         if self.grow > 1:
@@ -342,10 +344,12 @@ class GrismDisperser(object):
         
         self.modelf = np.zeros(np.product(self.sh_beam), dtype=np.float)
         self.model = self.modelf.reshape(self.sh_beam)
-        self.idx = np.arange(self.modelf.size).reshape(self.sh_beam)
+        self.idx = np.arange(self.modelf.size, dtype=np.int64).reshape(self.sh_beam)
         
         ## Indices of the trace in the flattened array 
-        self.x0 = np.array(self.sh) // 2
+        self.x0 = np.array(self.sh, dtype=np.int64) // 2
+        self.x0 -= 1 # zero index!
+        
         self.dxpix = self.dx - self.dx[0] + self.x0[1] #+ 1
         try:
             self.flat_index = self.idx[dyc + self.x0[0], self.dxpix]
@@ -433,7 +437,8 @@ class GrismDisperser(object):
         self.ytrace += yoffset
                 
     def compute_model(self, id=None, thumb=None, spectrum_1d=None,
-                      in_place=True, modelf=None, scale=None, is_cgs=False):
+                      in_place=True, modelf=None, scale=None, is_cgs=False,
+                      apply_sensitivity=True):
         """Compute a model 2D grism spectrum
 
         Parameters
@@ -469,6 +474,8 @@ class GrismDisperser(object):
             If `in_place` is False, returns the 2D model spectrum.  Otherwise
             the result is stored in `self.model` and `self.modelf`.
         """
+        from .utils_c import disperse
+        from .utils_c import interp
         
         if id is None:
             id = self.id
@@ -517,14 +524,22 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
                 return False
 
         ### Now compute the dispersed spectrum using the C helper
-        nonz = (self.sensitivity_beam*scale_spec) != 0
+        if apply_sensitivity:
+            sens_curve = self.sensitivity_beam
+        else:
+            sens_curve = 1.
+        
+        nonz = (sens_curve*scale_spec) != 0
         
         if nonz.sum() > 0:
-            status = disperse.disperse_grism_object(thumb, self.seg, id,
+            status = disperse.disperse_grism_object(thumb, self.seg, 
+                                 np.int32(id),
                                  self.flat_index[nonz], self.yfrac_beam[nonz],
-                                 (self.sensitivity_beam*scale_spec)[nonz],
-                                 modelf, self.x0, np.array(self.sh),
-                                 self.x0, np.array(self.sh_beam))
+                                 (sens_curve*scale_spec)[nonz],
+                                 modelf, self.x0, 
+                                 np.array(self.sh, dtype=np.int64),
+                                 self.x0, 
+                                 np.array(self.sh_beam, dtype=np.int64))
         
         #print('yyy PAM')
         modelf /= self.PAM_value #= self.get_PAM_value()
@@ -870,7 +885,10 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         self.psf_yoff = yoff
         self.psf_filter = psf_filter
         
-        self.psf = EPSF.get_ePSF(self.psf_params, origin=origin, shape=self.sh, filter=psf_filter, get_extended=get_extended)
+        self.psf = EPSF.get_ePSF(self.psf_params, sci=self.psf_sci,
+                                 ivar=self.psf_ivar, origin=origin, 
+                                 shape=self.sh, filter=psf_filter, 
+                                 get_extended=get_extended)
         #print('XXX', self.psf_params[0], self.psf.sum())
         
         # self.psf_params[0] /= self.psf.sum()
@@ -878,14 +896,18 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
                 
         # Center in detector coords
         y0, x0 = np.array(self.sh)/2.-1
-        xd = x0+self.psf_params[1] + origin[1]
-        yd = y0+self.psf_params[2] + origin[0] 
-
+        if len(self.psf_params) == 2:
+            xd = x0+self.psf_params[0] + origin[1]
+            yd = y0+self.psf_params[1] + origin[0] 
+        else:
+            xd = x0+self.psf_params[1] + origin[1]
+            yd = y0+self.psf_params[2] + origin[0] 
+            
         # Get wavelength array
         psf_xy_lam = []
         psf_ext_lam = []
         
-        for i, filter in enumerate(['F105W', 'F125W', 'F160W']):
+        for i, filter in enumerate(['F105W', 'F125W','F160W']):
             psf_xy_lam.append(EPSF.get_at_position(x=xd, y=yd, filter=filter))
             psf_ext_lam.append(EPSF.extended_epsf[filter])
         
@@ -904,15 +926,24 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         A_psf = []
         lam_psf = []
         
-        lam_offset = self.psf_params[1] #self.sh[1]/2 - self.psf_params[1] - 1
+        if len(self.psf_params) == 2:
+            lam_offset = self.psf_params[0] #self.sh[1]/2 - self.psf_params[1] - 1
+        else:
+            lam_offset = self.psf_params[1] #self.sh[1]/2 - self.psf_params[1] - 1
+        
         self.lam_offset = lam_offset
         
         for xi in xarr:
             yi = np.interp(xi, xbeam, self.ytrace_beam)
             li = np.interp(xi, xbeam, self.lam_beam) 
-            dx = xp_beam-self.psf_params[1]-xi-x0
-            dy = yp_beam-self.psf_params[2]-yi+yoff-y0
             
+            if len(self.psf_params) == 2:
+                dx = xp_beam-self.psf_params[0]-xi-x0
+                dy = yp_beam-self.psf_params[1]-yi+yoff-y0
+            else:
+                dx = xp_beam-self.psf_params[1]-xi-x0
+                dy = yp_beam-self.psf_params[2]-yi+yoff-y0
+                
             # wavelength-dependent
             ii = np.interp(li, filt_lam, filt_ix, left=-1, right=10)
             if ii == -1:
@@ -930,7 +961,10 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
             if not get_extended:
                 psf_ext_i = None
                 
-            psf = EPSF.eval_ePSF(psf_xy_i, dx, dy, extended_data=psf_ext_i)*self.psf_params[0]
+            psf = EPSF.eval_ePSF(psf_xy_i, dx, dy, extended_data=psf_ext_i)
+            if len(self.psf_params) > 2:
+                psf *= self.psf_params[0]
+                
             #print(xi, psf.sum())
             
             if seg_mask:
@@ -982,6 +1016,8 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         Integrate the sensitivity curve to the wavelengths for the 
         PSF model
         """
+        from .utils_c import interp
+
         so = np.argsort(self.lam_psf)
         s_i = interp.interp_conserve_c(self.lam_psf[so], wave, sensitivity, integrate=1)
         psf_sensitivity = s_i*0.
@@ -992,6 +1028,8 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         """
         Ensure normalization correct
         """
+        from .utils_c import interp
+ 
         if not hasattr(self, 'A_psf'):
             print('ePSF not initialized')
             return False
@@ -1062,7 +1100,7 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
         if not os.path.exists(ext_file):
             return False
             
-        bg_splines = np.load(ext_file)[0]
+        bg_splines = np.load(ext_file, allow_pickle=True)[0]
         spline_waves = np.array(list(bg_splines.keys()))
         spline_waves.sort()
         spl_ix = np.arange(len(spline_waves))
@@ -1085,7 +1123,12 @@ Error: `thumb` must have the same dimensions as the direct image! ({0:d},{1:d})
                 
         self.ext_psf_data = np.maximum(spl_data, 0)
         
-    def compute_model_psf(self, id=None, spectrum_1d=None, in_place=True, is_cgs=False):
+    def compute_model_psf(self, id=None, spectrum_1d=None, in_place=True, is_cgs=False, apply_sensitivity=True):
+        """
+        Compute model with PSF morphology template
+        """
+        from .utils_c import interp
+        
         if spectrum_1d is None:
             #modelf = np.array(self.A_psf.sum(axis=1)).flatten()
             #model = model.reshape(self.sh_beam)
@@ -1130,9 +1173,9 @@ class ImageData(object):
     """Container for image data with WCS, etc."""
     def __init__(self, sci=None, err=None, dq=None,
                  header=None, wcs=None, photflam=1., photplam=1.,
-                 origin=[0,0], pad=0,
+                 origin=[0,0], pad=0, process_jwst_header=True,
                  instrument='WFC3', filter='G141', pupil=None, hdulist=None,
-                 sci_extn=1):
+                 sci_extn=1, fwcpos=None):
         """
         Parameters
         ----------
@@ -1266,7 +1309,7 @@ class ImageData(object):
             
             if 'PUPIL' in h:
                 pupil = h['PUPIL']
-                
+
             if 'PHOTFLAM' in h:
                 photflam = h['PHOTFLAM']
             else:
@@ -1276,7 +1319,11 @@ class ImageData(object):
                 photplam = h['PHOTPLAM']
             else:
                 photplam = photplam_list[filter]
-                        
+            
+            # For NIRISS
+            if 'FWCPOS' in h:
+                fwcpos = h['FWCPOS']
+            
             self.mdrizsky = 0.
             if 'MDRIZSKY' in header:
                 #sci -= header['MDRIZSKY']
@@ -1348,7 +1395,7 @@ class ImageData(object):
         ### Array parameters
         self.pad = pad
         self.origin = origin
-        self.fwcpos = None
+        self.fwcpos = fwcpos # NIRISS
         self.MW_EBV = 0.
         
         self.data = OrderedDict()
@@ -1403,13 +1450,17 @@ class ImageData(object):
         self.wcs = None
         
         if instrument in ['NIRISS','NIRCAM']:
-            self.update_jwst_wcsheader(hdulist)
+            if process_jwst_header:
+                self.update_jwst_wcsheader(hdulist)
             
         if self.header is not None:
             if wcs is None:
                 self.get_wcs()
             else:
                 self.wcs = wcs.copy()
+                if not hasattr(self.wcs, 'pixel_shape'):
+                    self.wcs.pixel_shape = self.wcs._naxis1, self.wcs._naxis2
+                
         else:
             self.header = pyfits.Header()
         
@@ -1418,13 +1469,7 @@ class ImageData(object):
             self.ccdchip = self.header['CCDCHIP']
         else:
             self.ccdchip = 1
-            
-        # For NIRISS
-        if 'FWCPOS' in self.header:
-            self.fwcpos = self.header['FWCPOS']
-        else:
-            self.fwcpos = None
-        
+                    
         # Galactic extinction
         if 'MW_EBV' in self.header:
             self.MW_EBV = self.header['MW_EBV']
@@ -1492,7 +1537,7 @@ class ImageData(object):
                 if k in self.header:
                     self.header.remove(k)
                     
-    def get_wcs(self):
+    def get_wcs(self, pc2cd=False):
         """Get WCS from header"""
         import numpy.linalg
         import stwcs
@@ -1531,8 +1576,7 @@ class ImageData(object):
                 sly = slice(self.origin[0], self.origin[0]+self.sh[0])
                 
                 wcs = self.get_slice_wcs(wcs, slx=slx, sly=sly)
-
-                
+        
         else:
             fobj = None
             wcs = pywcs.WCS(self.header, relax=True, fobj=fobj)
@@ -1541,6 +1585,8 @@ class ImageData(object):
             wcs.pscale = utils.get_wcs_pscale(wcs)
                     
         self.wcs = wcs
+        if not hasattr(self.wcs, 'pixel_shape'):
+            self.wcs.pixel_shape = self.wcs._naxis1, self.wcs._naxis2
         
     @staticmethod
     def add_padding_to_wcs(wcs_in, pad=200):
@@ -1602,6 +1648,8 @@ class ImageData(object):
         
         ### Add padding to WCS        
         self.wcs = self.add_padding_to_wcs(self.wcs, pad=pad)
+        if not hasattr(self.wcs, 'pixel_shape'):
+            self.wcs.pixel_shape = self.wcs._naxis1, self.wcs._naxis2
         
                  
     def shrink_large_hdu(self, hdu=None, extra=100, verbose=False):
@@ -2039,7 +2087,8 @@ class GrismFLT(object):
     """Scripts for modeling of individual grism FLT images"""
     def __init__(self, grism_file='', sci_extn=1, direct_file='',
                  pad=200, ref_file=None, ref_ext=0, seg_file=None,
-                 shrink_segimage=True, force_grism='G141', verbose=True):
+                 shrink_segimage=True, force_grism='G141', verbose=True,
+                 process_jwst_header=True):
         """Read FLT files and, optionally, reference/segmentation images.
         
         Parameters
@@ -2142,7 +2191,8 @@ class GrismFLT(object):
                 wcs = None
            
             self.grism = ImageData(hdulist=grism_im, sci_extn=sci_extn,
-                                   wcs=wcs)
+                                   wcs=wcs, 
+                                   process_jwst_header=process_jwst_header)
         else:
             if (grism_file is None) | (grism_file == ''):
                 self.grism = None
@@ -2160,7 +2210,8 @@ class GrismFLT(object):
                 wcs = None
                 
             self.direct = ImageData(hdulist=direct_im, sci_extn=sci_extn,
-                                    wcs=wcs)
+                                    wcs=wcs, 
+                                    process_jwst_header=process_jwst_header)
         else:
             if (direct_file is None) | (direct_file == ''):
                 self.direct = None
@@ -2538,6 +2589,7 @@ class GrismFLT(object):
             If `in_place` is False, return a full array including the model 
             for the single object.
         """               
+        from .utils_c import disperse
         
         # debug
         # x=None; y=None; size=10; mag=-1; spectrum_1d=None; compute_size=True; store=False; in_place=False; add=True; get_beams=['A']; verbose=True
@@ -2805,6 +2857,8 @@ class GrismFLT(object):
         -------
         Updated model stored in `self.model` attribute.
         """
+        from .utils_c import disperse
+
         if ids is None:
             ids = np.unique(self.seg)[1:]
         
@@ -3021,7 +3075,7 @@ class GrismFLT(object):
                              save_detection=save_detection, 
                              root=self.direct_file.split('.fits')[0],
                              background=None, gain=None, AB_zeropoint=ZP,
-                             clobber=True, verbose=verbose)
+                             overwrite=True, verbose=verbose)
         
         self.catalog = cat
         self.catalog_file = '<photutils>'
@@ -3060,7 +3114,7 @@ class GrismFLT(object):
         self.catalog = Table.read(seg_cat, format=catalog_format)
         self.catalog_file = seg_cat
         
-    def save_model(self, clobber=True, verbose=True):
+    def save_model(self, overwrite=True, verbose=True):
         """Save model properties to FITS file
         """
         try:
@@ -3104,7 +3158,7 @@ class GrismFLT(object):
         
             hdu.append(ref)
             
-        hdu.writeto('{0}_model.fits'.format(root), clobber=clobber,
+        hdu.writeto('{0}_model.fits'.format(root), overwrite=overwrite,
                     output_verify='fix')
         
         fp = open('{0}_model.pkl'.format(root), 'wb')
@@ -3146,7 +3200,7 @@ class GrismFLT(object):
                                    name='MODEL'))
         
         
-        hdu.writeto('{0}.{1:02d}.GrismFLT.fits'.format(root, self.grism.sci_extn), clobber=True, output_verify='fix')
+        hdu.writeto('{0}.{1:02d}.GrismFLT.fits'.format(root, self.grism.sci_extn), overwrite=True, output_verify='fix')
         
         ## zero out large data objects
         self.direct.data = self.grism.data = self.seg = self.model = None
@@ -3294,7 +3348,57 @@ class GrismFLT(object):
             self.catalog = self.blot_catalog(self.catalog, 
                           sextractor=('X_WORLD' in self.catalog.colnames))
     
-    def make_edge_mask(self, scale=3, force=False):
+    def mask_mosaic_edges(self, sky_poly=None, verbose=True, force=False, err_scale=10, dq_mask=False, dq_value=1024, resid_sn=7):
+        """
+        Mask edges of exposures that might not have modeled spectra
+        """
+        import pyregion
+        import scipy.ndimage as nd
+        
+        if (self.has_edge_mask) & (force == False):
+            return True
+        
+        if sky_poly is None:
+            return True
+                    
+        xy_image = self.grism.wcs.all_world2pix(np.array(sky_poly.boundary.xy).T, 0)
+        
+        # Calculate edge for mask
+        #xedge = 100
+        x0 = 0
+        y0 = (self.grism.sh[0]-2*self.pad)/2
+        dx = np.arange(500)
+        tr_y, tr_lam = self.conf.get_beam_trace(x0, y0, dx=dx, beam='A')
+        tr_sens = np.interp(tr_lam, self.conf.sens['A']['WAVELENGTH'], 
+                                   self.conf.sens['A']['SENSITIVITY'], 
+                                   left=0, right=0)
+        
+        xedge = dx[tr_sens > tr_sens.max()*0.05].max()  
+                
+        xy_image[:,0] += xedge
+        
+        xy_str = 'image;polygon('+','.join(['{0:.1f}'.format(p) for p in xy_image.flatten()])+')'
+        reg = pyregion.parse(xy_str)
+        mask = reg.get_mask(shape=tuple(self.grism.sh))*1 == 0
+        
+        # Only mask large residuals
+        if resid_sn > 0:
+            resid_mask = (self.grism['SCI'] - self.model) > resid_sn*self.grism['ERR'] 
+            resid_mask = nd.binary_dilation(resid_mask, iterations=3)
+            mask &= resid_mask
+            
+        if dq_mask:
+            self.grism.data['DQ'] |= dq_value*mask
+            if verbose:
+                print('# mask mosaic edges: {0} ({1}, {2} pix) DQ={3:.0f}'.format(self.grism.parent_file, self.grism.filter, xedge, dq_value))
+        else:
+            self.grism.data['ERR'][mask] *= err_scale
+            if verbose:
+                print('# mask mosaic edges: {0} ({1}, {2} pix) err_scale={3:.1f}'.format(self.grism.parent_file, self.grism.filter, xedge, err_scale))
+            
+        self.has_edge_mask = True
+    
+    def old_make_edge_mask(self, scale=3, force=False):
         """Make a mask for the edge of the grism FoV that isn't covered by the direct image
         
         Parameters
@@ -3336,7 +3440,8 @@ class GrismFLT(object):
 class BeamCutout(object):
     def __init__(self, flt=None, beam=None, conf=None, 
                  get_slice_header=True, fits_file=None, scale=1., 
-                 contam_sn_mask=[10,3], min_mask=0.01, min_sens=0.08):
+                 contam_sn_mask=[10,3], min_mask=0.01, min_sens=0.08,
+                 mask_resid=True):
         """Cutout spectral object from the full frame.
         
         Parameters
@@ -3414,12 +3519,14 @@ class BeamCutout(object):
         self.contam_sn_mask = contam_sn_mask
         self.min_mask = min_mask
         self.min_sens = min_sens
+        self.mask_resid = mask_resid
         
         self._parse_from_data(contam_sn_mask=contam_sn_mask,
-                              min_mask=min_mask, min_sens=min_sens)
+                              min_mask=min_mask, min_sens=min_sens,
+                              mask_resid=mask_resid)
         
     def _parse_from_data(self, contam_sn_mask=[10,3], min_mask=0.01, 
-                         min_sens=0.08):
+                         min_sens=0.08, mask_resid=True):
         """
         See parameter description for `~grizli.model.BeamCutout`.
         """
@@ -3472,10 +3579,15 @@ class BeamCutout(object):
         self.wavef = np.dot(np.ones((self.sh[0],1)), self.wave[None,:]).flatten()
         
         ### Mask large residuals where throughput is low
-        resid = np.abs(self.scif - self.flat_flam)*np.sqrt(self.ivarf)
-        bad_resid = (self.flat_flam < 0.05*self.flat_flam.max()) & (resid > 5)
-        self.fit_mask *= ~bad_resid
-        
+        if mask_resid:
+            resid = np.abs(self.scif - self.flat_flam)*np.sqrt(self.ivarf)
+            bad_resid = (self.flat_flam < 0.05*self.flat_flam.max()) 
+            bad_resid &= (resid > 5)
+            self.bad_resid = bad_resid
+            self.fit_mask *= ~bad_resid
+        else:
+            self.bad_resid = np.zeros_like(self.fit_mask)
+            
         ### Mask very contaminated
         contam_mask = ((self.contam*np.sqrt(self.ivar) > contam_sn_mask[0]) & 
                       (self.model*np.sqrt(self.ivar) < contam_sn_mask[1]))
@@ -3631,8 +3743,26 @@ class BeamCutout(object):
         self.direct.parent_file = h0['DPARENT']
         self.id = h0['ID']
         self.modelf = self.beam.modelf
+    
+    @property 
+    def trace_table(self):
+        """
+        Table of trace parameters.  Trace is unit-indexed.
+        """    
+        dtype = np.float32
         
-    def write_fits(self, root='beam_', clobber=True, strip=False, get_hdu=False):
+        tab = utils.GTable()
+        tab.meta['CONFFILE'] = os.path.basename(self.beam.conf.conf_file)
+
+        tab['wavelength'] = np.cast[dtype](self.beam.lam*u.Angstrom)
+        tab['trace'] = np.cast[dtype](self.beam.ytrace + self.beam.sh_beam[0]/2 - self.beam.ycenter)
+        
+        sens_units = u.erg/u.second/u.cm**2/u.Angstrom/(u.electron/u.second)
+        tab['sensitivity'] = np.cast[dtype](self.beam.sensitivity*sens_units)
+        
+        return tab
+        
+    def write_fits(self, root='beam_', overwrite=True, strip=False, include_model=True, get_hdu=False, get_trace_table=True):
         """Write attributes and data to FITS file
         
         Parameters
@@ -3644,7 +3774,7 @@ class BeamCutout(object):
             
             with `self.id` zero-padded with 5 digits.
         
-        clobber : bool
+        overwrite : bool
             Overwrite existing file.
         
         strip : bool
@@ -3695,13 +3825,42 @@ class BeamCutout(object):
         hdu.append(pyfits.ImageHDU(data=np.cast[np.int32](self.beam.seg), 
                                    header=hdu[-1].header, name='SEG'))
         
-        hdu.extend(self.grism.get_HDUList(extver=2))
+        ### 2D grism spectra
+        grism_hdu = self.grism.get_HDUList(extver=2)
+        
+        #######
+        # 2D Spectroscopic WCS
+        hdu2d, wcs2d = self.get_2d_wcs()
+        
+        # Get available 'WCSNAME'+key
+        for key in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+            if 'WCSNAME{0}'.format(key) not in self.grism.header:
+                break
+            else:
+                wcsname = self.grism.header['WCSNAME{0}'.format(key)]
+                if wcsname == 'BeamLinear2D':
+                    break
+        
+        h2d = wcs2d.to_header(key=key)
+        for ext in grism_hdu:
+            for k in h2d:
+                ext.header[k] = h2d[k], h2d.comments[k]
+        ####
+                 
+        hdu.extend(grism_hdu)
         hdu.append(pyfits.ImageHDU(data=self.contam, header=hdu[-1].header,
                                    name='CONTAM'))
                                    
-        hdu.append(pyfits.ImageHDU(data=self.model, header=hdu[-1].header,
-                                   name='MODEL'))
+        if include_model:
+            hdu.append(pyfits.ImageHDU(data=np.cast[np.float32](self.model), 
+                                       header=hdu[-1].header, name='MODEL'))
         
+        if get_trace_table:
+            trace_hdu = pyfits.table_to_hdu(self.trace_table)
+            trace_hdu.header['EXTNAME'] = 'TRACE'
+            trace_hdu.header['EXTVER'] = 2
+            hdu.append(trace_hdu)
+            
         if strip:
             # Blotted reference is attached, don't need individual direct 
             # arrays.
@@ -3712,8 +3871,9 @@ class BeamCutout(object):
                         p = hdu.pop(ix)
             
             # This can be regenerated    
-            ix = hdu.index_of('MODEL')
-            p = hdu.pop(ix)
+            # if strip & 2:
+            #     ix = hdu.index_of('MODEL')
+            #     p = hdu.pop(ix)
             
             # Put Primary keywords in first extension
             SKIP_KEYS = ['EXTEND', 'SIMPLE']
@@ -3729,7 +3889,7 @@ class BeamCutout(object):
                                          self.grism.filter.lower(),
                                          self.beam.beam)
                                          
-        hdu.writeto(outfile, clobber=clobber)
+        hdu.writeto(outfile, overwrite=overwrite)
         
         return outfile
         
@@ -3796,7 +3956,7 @@ class BeamCutout(object):
             else:
                 cr = wcs_ext.crpix
             
-            cr[0] += dx + self.beam.sh[0]/2 + self.beam.dxfull[0] + dc
+            cr[0] += dx + self.beam.x0[1] + self.beam.dxfull[0] + dc
             cr[1] += dy + dc
         
         for wcs_ext in [wcs.cpdis1, wcs.cpdis2, wcs.det2im1, wcs.det2im2]:
@@ -3835,7 +3995,7 @@ class BeamCutout(object):
         
         return header, wcs
     
-    def get_2d_wcs(self, data=None):
+    def get_2d_wcs(self, data=None, key=None):
         """Get simplified WCS of the 2D spectrum
         
         Parameters
@@ -3843,6 +4003,9 @@ class BeamCutout(object):
         data : array-like
             Put this data in the output HDU rather than empty zeros
         
+        key : None
+            Key for WCS extension, passed to `~astropy.wcs.WCS.to_header`.
+            
         Returns
         -------
         hdu : `~astropy.io.fits.ImageHDU`
@@ -3857,18 +4020,26 @@ class BeamCutout(object):
             
         """
         h = pyfits.Header()
+        
+        h['WCSNAME'] = 'BeamLinear2D'
+        
         h['CRPIX1'] = self.beam.sh_beam[0]/2 - self.beam.xcenter
         h['CRPIX2'] = self.beam.sh_beam[0]/2 - self.beam.ycenter
+        
+        # Wavelength, A
+        h['CNAME1'] = 'Wave-Angstrom'
+        h['CTYPE1'] = 'WAVE'
+        #h['CUNIT1'] = 'Angstrom'
         h['CRVAL1'] = self.beam.lam_beam[0]        
         h['CD1_1'] = self.beam.lam_beam[1] - self.beam.lam_beam[0]
         h['CD1_2'] = 0.
         
+        # Linear trace
+        h['CNAME2'] = 'Trace'
+        h['CTYPE2'] = 'LINEAR'
         h['CRVAL2'] = -1*self.beam.ytrace_beam[0]
         h['CD2_2'] = 1.
         h['CD2_1'] = -(self.beam.ytrace_beam[1] - self.beam.ytrace_beam[0])
-        
-        h['CTYPE1'] = 'WAVE'
-        h['CTYPE2'] = 'LINEAR'
         
         if data is None:
             data = np.zeros(self.beam.sh_beam, dtype=np.float32)
@@ -4019,7 +4190,7 @@ class BeamCutout(object):
             
         return dispersion_PA
     
-    def init_epsf(self, center=None, tol=1.e-3, yoff=0., skip=1., flat_sensitivity=False, psf_params=None, N=4, get_extended=False):
+    def init_epsf(self, center=None, tol=1.e-3, yoff=0., skip=1., flat_sensitivity=False, psf_params=None, N=4, get_extended=False, only_centering=True):
         """Initialize ePSF fitting for point sources
         TBD
         """
@@ -4037,20 +4208,23 @@ class BeamCutout(object):
             
         origin = np.array(self.direct.origin) - np.array(self.direct.pad)
         if psf_params is None:
+            self.beam.psf_ivar = ivar*1
+            self.beam.psf_sci = self.direct['SCI']*1
             self.psf_params = EPSF.fit_ePSF(self.direct['SCI'], 
                                                   ivar=ivar, 
                                                   center=center, tol=tol,
                                                   N=N, origin=origin,
                                                   filter=self.direct.filter,
                                                   get_extended=get_extended,
-                                                  only_centering=False)
+                                                only_centering=only_centering)
         else:
             self.psf_params = psf_params
             
         self.beam.x_init_epsf(flat_sensitivity=False, psf_params=self.psf_params, psf_filter=self.direct.filter, yoff=yoff, skip=skip, get_extended=get_extended)
         
         self._parse_from_data(contam_sn_mask=self.contam_sn_mask,
-                              min_mask=self.min_mask, min_sens=self.min_sens)
+                              min_mask=self.min_mask, min_sens=self.min_sens,
+                              mask_resid=self.mask_resid)
         
         return None
         

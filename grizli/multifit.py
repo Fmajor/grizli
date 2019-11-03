@@ -22,7 +22,7 @@ from . import utils
 from . import model
 #from . import stack
 from .fitting import GroupFitter
-from .utils_c import disperse
+#from .utils_c import disperse
 from .utils_c import interp
 
 from .utils import GRISM_COLORS, GRISM_MAJOR, GRISM_LIMITS, DEFAULT_LINE_LIST
@@ -575,7 +575,7 @@ class GroupFLT():
                            is_cgs=False):
         """TBD
         """
-        if cpu_count == 0:
+        if cpu_count <= 0:
             cpu_count = mp.cpu_count()
         
         if fit_info is None:
@@ -616,7 +616,7 @@ class GroupFLT():
         
     def get_beams(self, id, size=10, center_rd=None, beam_id='A',
                   min_overlap=0.1, min_valid_pix=10, min_mask=0.01, 
-                  min_sens=0.08, get_slice_header=True):
+                  min_sens=0.08, mask_resid=True, get_slice_header=True):
         """Extract 2D spectra "beams" from the GroupFLT exposures.
         
         Parameters
@@ -667,6 +667,7 @@ class GroupFLT():
                 out_beam = model.BeamCutout(flt=flt, beam=beam[beam_id],
                                         conf=flt.conf, min_mask=min_mask,
                                         min_sens=min_sens,
+                                        mask_resid=mask_resid,
                                         get_slice_header=get_slice_header)
             except:
                 #print('Except: get_beams')
@@ -792,11 +793,14 @@ class GroupFLT():
         Updates `self.model` in place.
         
         """
-        beams = self.get_beams(id, size=size, min_overlap=0.5, get_slice_header=False)
+        beams = self.get_beams(id, size=size, min_overlap=0.1,
+                               get_slice_header=False, min_mask=0.01, 
+                               min_sens=0.01, mask_resid=True)
         if len(beams) == 0:
             return True
         
-        mb = MultiBeam(beams, fcontam=fcontam)
+        mb = MultiBeam(beams, fcontam=fcontam, min_sens=0.01, sys_err=0.03,
+                       min_mask=0.01, mask_resid=True)
         
         if templates is None:
             wave = np.linspace(0.9*mb.wavef.min(),1.1*mb.wavef.max(),100)
@@ -806,10 +810,17 @@ class GroupFLT():
         try:
             tfit = mb.template_at_z(z=0, templates=templates, fit_background=True, fitter='lstsq', get_uncertainties=2)
         except:
+            ret = False
             return False
             
         scale_coeffs = [tfit['cfit']['poly {0}'.format(i)][0] for i in range(1+poly_order)]
         xspec, ypoly = tfit['cont1d'].wave, tfit['cont1d'].flux
+        # Don't extrapolate
+        mb_waves = mb.wavef[mb.fit_mask]
+        mb_clip = (xspec > mb_waves.min()) & (xspec < mb_waves.max())
+        if mb_clip.sum() > 0:
+            ypoly[xspec < mb_waves.min()] = ypoly[mb_clip][0]
+            ypoly[xspec > mb_waves.max()] = ypoly[mb_clip][-1]
         
         # Check where templates inconsistent with broad-band fluxes
         xb = [beam.direct.ref_photplam if beam.direct['REF'] is not None else beam.direct.photplam for beam in beams]
@@ -941,11 +952,11 @@ class GroupFLT():
         if save:
             fig.savefig('{0}_{1:05d}.stack.png'.format(target, id))
             hdu.writeto('{0}_{1:05d}.stack.fits'.format(target, id),
-                        clobber=True)
+                        overwrite=True)
         
         return hdu, fig
     
-    def drizzle_grism_models(self, root='grism_model', kernel='square', scale=0.1, pixfrac=1):
+    def drizzle_grism_models(self, root='grism_model', kernel='square', scale=0.1, pixfrac=1, make_figure=True, fig_xsize=10):
         """
         Make model-subtracted drizzled images of each grism / PA
         
@@ -979,7 +990,7 @@ class GroupFLT():
                 clean_list = [self.FLTs[i].grism['SCI']-self.FLTs[i].model 
                                  for i in idx]
 
-                wht_list = [1/self.FLTs[i].grism['ERR']**2 for i in idx]
+                wht_list = [(self.FLTs[i].grism['DQ'] == 0)/self.FLTs[i].grism['ERR']**2 for i in idx]
                 for i in range(N):
                     mask = ~np.isfinite(wht_list[i])
                     wht_list[i][mask] = 0
@@ -1016,7 +1027,57 @@ class GroupFLT():
                 header['PA'] = pa
                 pyfits.writeto(outfile, data=outsci, header=header, 
                                overwrite=True, output_verify='fix')
-          
+                
+                # Make figure
+                if make_figure:
+                    img = pyfits.open(outfile.replace('clean','sci'))
+                    im = img[0].data
+                    im[im == 0] = np.nan
+                
+                    sh = im.shape
+                    yp, xp = np.indices(sh)
+                    mask = np.isfinite(im)
+                    
+                    xmi = np.maximum(xp[mask].min()-10, 0)
+                    xma = np.minimum(xp[mask].max()+10, sh[1])
+                    ymi = np.maximum(yp[mask].min()-10, 0)
+                    yma = np.minimum(yp[mask].max()+10, sh[0])
+                    
+                    xsl = slice(xmi, xma)
+                    ysl = slice(ymi, yma)
+                
+                    sh_aspect = (ysl.stop - ysl.start) / (xsl.stop - xsl.start)
+                    vmi, vma = -0.05, 0.2
+                
+                    fig = plt.figure(figsize=[fig_xsize, fig_xsize/2*sh_aspect])
+                
+                    ax = fig.add_subplot(121)
+                    ax.imshow(im[ysl, xsl], origin='lower', cmap='gray_r',
+                              vmin=vmi, vmax=vma)
+                             
+                    # Clean
+                    ax = fig.add_subplot(122)
+                    im = pyfits.open(outfile)[0].data
+                    im[im == 0] = np.nan
+                                        
+                    ax.imshow(im[ysl, xsl], origin='lower', cmap='gray_r',
+                              vmin=vmi, vmax=vma)
+                
+                    for ax in fig.axes:
+                        ax.set_xticklabels([])
+                        ax.set_yticklabels([])
+                        ax.axis('off')
+                        
+                    fig.tight_layout(pad=0.)
+                    
+                    fig.text(0.5, 0.98, outfile.split('_grism')[0], color='k', 
+                             bbox=dict(facecolor='w', edgecolor='None'), 
+                             ha='center', va='top', transform=fig.transFigure)
+                    
+                    fig.savefig(outfile.split('_clean')[0]+'.png',
+                                transparent=True)
+                    plt.close(fig)
+                    
     def drizzle_full_wavelength(self, wave=1.4e4, ref_header=None,
                      kernel='point', pixfrac=1., verbose=True, 
                      offset=[0,0], fcontam=0.):
@@ -1053,21 +1114,21 @@ class GroupFLT():
         from astropy.modeling import models, fitting
         import astropy.wcs as pywcs
         
-        try:
-            import drizzle
-            if drizzle.__version__ != '1.12.99':
-                # Not the fork that works for all input/output arrays
-                raise(ImportError)
-            
-            #print('drizzle!!')
-            from drizzle.dodrizzle import dodrizzle
-            drizzler = dodrizzle
-            dfillval = '0'
-        except:
-            from drizzlepac.astrodrizzle import adrizzle
-            adrizzle.log.setLevel('ERROR')
-            drizzler = adrizzle.do_driz
-            dfillval = 0
+        # try:
+        #     import drizzle
+        #     if drizzle.__version__ != '1.12.99':
+        #         # Not the fork that works for all input/output arrays
+        #         raise(ImportError)
+        #     
+        #     #print('drizzle!!')
+        #     from drizzle.dodrizzle import dodrizzle
+        #     drizzler = dodrizzle
+        #     dfillval = '0'
+        # except:
+        from drizzlepac import adrizzle
+        adrizzle.log.setLevel('ERROR')
+        drizzler = adrizzle.do_driz
+        dfillval = 0
             
         ## Quick check now for which grism exposures we should use
         if wave < 1.1e4:
@@ -1152,6 +1213,8 @@ class GroupFLT():
             
             line_wcs = pywcs.WCS(h, relax=True)
             line_wcs.pscale = utils.get_wcs_pscale(line_wcs)
+            if not hasattr(line_wcs, 'pixel_shape'):
+                line_wcs.pixel_shape = line_wcs._naxis1, line_wcs._naxis2
 
             # Science and wht arrays
             sci = flt.grism['SCI'] - flt.model
@@ -1173,9 +1236,119 @@ class GroupFLT():
         # Done!
         return outsci, outwht
             
+# def replace_direct_image_cutouts(beams_file='', ref_image='gdn-100mas-f160w_drz_sci.fits', interp='poly5', cutout=200, background_func=utils.mode_statistic):
+#     """
+#     Replace "REF" extensions in a `beams.fits` file
+#     
+#     Parameters
+#     ----------
+#     beams_file : str
+#         Filename of a "beams.fits" file.
+#         
+#     ref_image : str or `~astropy.io.fits.HDUList`
+#        Filename or preloaded FITS file.
+#         
+#     interp : str
+#         Interpolation function to use for `~drizzlepac.astrodrizzle.ablot.do_blot`.
+#         
+#     cutout : int
+#         Make a slice of the `ref_image` with size [-cutout,+cutout] around
+#         the center position of the desired object before passing to `blot`.
+#         
+#     Returns
+#     -------
+#     beams_image : `~astropy.io.fits.HDUList`
+#         Image object with the "REF" extensions filled with the new blotted
+#         image cutouts.
+#         
+#     """
+#     from drizzlepac.astrodrizzle import ablot
+#     
+#     if isinstance(ref_image, pyfits.HDUList):
+#         ref_im = ref_image
+#         ref_image_filename = ref_image.filename()
+#     else:
+#         ref_im = pyfits.open(ref_image)
+#         ref_image_filename = ref_image
+#     
+#     ref_wcs = pywcs.WCS(ref_im[0].header, relax=True)
+#     ref_wcs.pscale = utils.get_wcs_pscale(ref_wcs)
+#     
+#     ref_photflam = ref_im[0].header['PHOTFLAM']
+#     ref_data = ref_im[0].data
+#     dummy_wht = np.ones_like(ref_im[0].data, dtype=np.float32)
+#     
+#     beams_image = pyfits.open(beams_file)
+#     
+#     beam_ra = beams_image[0].header['RA']
+#     beam_dec = beams_image[0].header['DEC']
+# 
+#     xy = np.cast[int](np.round(ref_wcs.all_world2pix([beam_ra], [beam_dec], 0))).flatten()
+#     
+#     slx = slice(xy[0]-cutout, xy[0]+cutout)
+#     sly = slice(xy[1]-cutout, xy[1]+cutout)
+# 
+#     bkg_data = []
+#     
+#     for ie, ext in enumerate(beams_image):
+#         if 'EXTNAME' not in ext.header:
+#             continue
+#         elif ext.header['EXTNAME'] == 'REF':
+#             #break
+#             
+#             ext.header['REF_FILE'] = ref_image_filename
+#             for k in ['PHOTFLAM', 'PHOTPLAM']:
+#                 ext.header[k] = ref_im[0].header[k]
+#             
+#             the_filter = utils.get_hst_filter(ref_im[0].header)
+#             ext.header['FILTER'] = ext.header['DFILTER'] = the_filter
+#             
+#             wcs_file = ext.header['GPARENT'].replace('.fits', '.{0:02}.wcs.fits'.format(ext.header['SCI_EXTN']))
+#             if os.path.exists(wcs_file):
+#                 wcs_fobj = pyfits.open(wcs_file)
+#                 
+#                 ext_wcs = pywcs.WCS(ext.header, relax=True,
+#                                     fobj=wcs_fobj)
+#                 # ext_wcs.pixel_shape = (wcs_fobj[0].header['CRPIX1']*2, 
+#                 #                        wcs_fobj[0].header['CRPIX2']*2)
+#                 # try:
+#                 #     ext_wcs.wcs.cd = ext_wcs.wcs.pc
+#                 #     delattr(ext_wcs.wcs, 'pc')
+#                 # except:
+#                 #     pass
+#             else:
+#                 ext_wcs = pywcs.WCS(ext.header, relax=True)
+#             
+#             ext_wcs.pscale = utils.get_wcs_pscale(ext_wcs)
+#             blotted = ablot.do_blot(ref_data[sly, slx], 
+#                               ref_wcs.slice([sly, slx]), 
+#                               ext_wcs, 1, coeffs=True, interp=interp, 
+#                               sinscl=1.0, stepsize=10, wcsmap=None)
+#             
+#             if background_func is not None:
+#                 seg_data = beams_image[ie+1].data
+#                 msk = seg_data == 0
+#                 #print(msk.shape, blotted.shape, seg_data.shape, ie)
+#                 if msk.sum() > 0:
+#                     if bkg_data is None:
+#                         bkg_data = blotted[msk]
+#                     else:
+#                         bkg_data = np.append(bkg_data, blotted[msk])
+#                         
+#                 if msk.sum() > 0:
+#                     blotted -= background_func(blotted[msk])
+#                     
+#             ext.data = blotted*ref_photflam
+#         
+#         if bkg_data is not None:
+#             bkg_value = background_func(bkg_data)
+#             for i in range(self.N):
+#                 
+#     return beams_image
+    
     
 class MultiBeam(GroupFitter):
-    def __init__(self, beams, group_name='group', fcontam=0., psf=False, polyx=[0.3, 2.5], MW_EBV=0., min_mask=0.01, min_sens=0.08, sys_err=0.0, verbose=True):
+    def __init__(self, beams, group_name=None, fcontam=0., psf=False, polyx=[0.3, 2.5], MW_EBV=0., min_mask=0.01, min_sens=0.08, sys_err=0.0, mask_resid=True, verbose=True, replace_direct=None, **kwargs):
         """Tools for dealing with multiple `~.model.BeamCutout` instances 
         
         Parameters
@@ -1183,8 +1356,9 @@ class MultiBeam(GroupFitter):
         beams : list
             List of `~.model.BeamCutout` objects.
         
-        group_name : str
-            Rootname to use for saved products
+        group_name : str, None
+            Rootname to use for saved products.  If None, then default to
+            'group'.
             
         fcontam : float
             Factor to use to downweight contaminated pixels.  The pixel 
@@ -1221,14 +1395,28 @@ class MultiBeam(GroupFitter):
         TBD : type
         
         """     
-        self.group_name = group_name
+        if group_name is None:
+            self.group_name = 'group'
+        else:
+            self.group_name = group_name
+            
         self.fcontam = fcontam
         self.polyx = polyx
         self.min_mask = min_mask
         self.min_sens = min_sens
+        self.mask_resid = mask_resid
+        self.sys_err = sys_err
+        
+        self.Asave = {}
         
         if isinstance(beams, str):
-            self.load_master_fits(beams, verbose=verbose)            
+            self.load_master_fits(beams, verbose=verbose)    
+            
+            # Auto-generate group_name from filename, e.g., 
+            # j100140p0130_00237.beams.fits > j100140p0130
+            if group_name is None:
+                self.group_name = beams.split('_')[0]
+                        
         else:
             if isinstance(beams[0], str):
                 ### `beams` is list of strings
@@ -1236,29 +1424,22 @@ class MultiBeam(GroupFitter):
                     # Master beam files
                     self.load_master_fits(beams[0], verbose=verbose)            
                     for i in range(1, len(beams)):
-                        b_i = MultiBeam(beams[i], group_name=group_name, fcontam=fcontam, psf=psf, polyx=polyx, MW_EBV=np.maximum(MW_EBV, 0), sys_err=sys_err, verbose=verbose)
+                        b_i = MultiBeam(beams[i], group_name=group_name, fcontam=fcontam, psf=psf, polyx=polyx, MW_EBV=np.maximum(MW_EBV, 0), sys_err=sys_err, verbose=verbose, min_mask=min_mask, min_sens=min_sens, mask_resid=mask_resid)
                         self.extend(b_i)
-                        
+                    
                 else:
                     # List of individual beam.fits files
                     self.load_beam_fits(beams)            
             else:
                 self.beams = beams
         
-        # minimum error
-        self.sys_err = sys_err
-        for beam in self.beams:
-            beam.ivarf = 1./(1/beam.ivarf + (sys_err*beam.scif)**2)
-            beam.ivarf[~np.isfinite(beam.ivarf)] = 0
-            beam.ivar = beam.ivarf.reshape(beam.sh)
-        
         self.ra, self.dec = self.beams[0].get_sky_coords()
         
         if MW_EBV < 0:
             ### Try to get MW_EBV from hsaquery.utils
             try:
-                import hsaquery.utils
-                MW_EBV = hsaquery.utils.get_irsa_dust(self.ra, self.dec)
+                import mastquery.utils
+                MW_EBV = mastquery.utils.get_irsa_dust(self.ra, self.dec)
             except:
                 MW_EBV = 0
         
@@ -1296,14 +1477,18 @@ class MultiBeam(GroupFitter):
                 b.flat_flam = b.compute_model(in_place=False, is_cgs=True)
                 
     def _parse_beams(self, psf=False):
-        
+        """
+        Derive properties of the beam list (grism, PA) and initialize
+        data arrays.
+        """
         self.N = len(self.beams)
         self.Ngrism = {}
         for i in range(self.N):
-            if self.beams[i].grism.instrument == 'NIRISS':
-                grism = self.beams[i].grism.pupil
+            beam = self.beams[i]
+            if beam.grism.instrument == 'NIRISS':
+                grism = beam.grism.pupil
             else:
-                grism = self.beams[i].grism.filter
+                grism = beam.grism.filter
                 
             if grism in self.Ngrism:
                 self.Ngrism[grism] += 1
@@ -1369,6 +1554,10 @@ class MultiBeam(GroupFitter):
         self.Nflat = [np.product(shape) for shape in self.shapes]
         self.Ntot = np.sum(self.Nflat)
         
+        for b in self.beams:
+            if hasattr(b, 'xp_mask'):
+                delattr(b, 'xp_mask')
+            
         ### Big array of normalized wavelengths (wave / 1.e4 - 1)
         self.xpf = np.hstack([np.dot(np.ones((b.beam.sh_beam[0],1)),
                                     b.beam.lam[None,:]).flatten()/1.e4 
@@ -1380,12 +1569,26 @@ class MultiBeam(GroupFitter):
                                       for b in self.beams])
                                                
         self.DoF = self.fit_mask.sum()
+        
+        # systematic error
+        for i, b in enumerate(self.beams):
+            if hasattr(b, 'has_sys_err'):
+                continue
+            
+            sciu = b.scif.reshape(b.sh)
+            ivar = 1./(1/b.ivar + (self.sys_err*sciu)**2)
+            ivar[~np.isfinite(ivar)] = 0
+            b.ivar = ivar*1
+            b.ivarf = b.ivar.flatten()
+        
         self.ivarf = np.hstack([b.ivarf for b in self.beams])
         
         self.fit_mask &= (self.ivarf >= 0) 
         
         self.scif = np.hstack([b.scif for b in self.beams])
-
+        self.idf = np.hstack([b.scif*0+ib for ib, b in enumerate(self.beams)])
+        self.idf = np.cast[int](self.idf)
+        
         #self.ivarf = 1./(1/self.ivarf + (self.sys_err*self.scif)**2)
         self.ivarf[~np.isfinite(self.ivarf)] = 0
         self.sivarf = np.sqrt(self.ivarf)
@@ -1410,6 +1613,8 @@ class MultiBeam(GroupFitter):
         self.slices = self._get_slices(masked=False)
         self.A_bg = self._init_background(masked=False)
         
+        self.Asave = {}
+        
         self._update_beam_mask()
         self.A_bgm = self._init_background(masked=True)
         
@@ -1418,7 +1623,12 @@ class MultiBeam(GroupFitter):
         self.ra, self.dec = self.beams[0].get_sky_coords()
     
     def compute_exptime(self):
+        """
+        Compute number of exposures and total exposure time for each grism
+        """
         exptime = {}
+        nexposures = {}
+        
         for beam in self.beams:
             if beam.grism.instrument == 'NIRISS':
                 grism = beam.grism.pupil
@@ -1427,10 +1637,12 @@ class MultiBeam(GroupFitter):
             
             if grism in exptime:
                 exptime[grism] += beam.grism.exptime
+                nexposures[grism] += 1
             else:
                 exptime[grism] = beam.grism.exptime
+                nexposures[grism] = 1
         
-        return exptime
+        return nexposures, exptime
         
     def extend(self, new, verbose=True):
         """Concatenate `~grizli.multifit.MultiBeam` objects
@@ -1449,7 +1661,7 @@ class MultiBeam(GroupFitter):
         if verbose:
             print('Add beams: {0}\n      Now: {1}'.format(new.Ngrism, self.Ngrism))
         
-    def write_master_fits(self, verbose=True, get_hdu=False):
+    def write_master_fits(self, verbose=True, get_hdu=False, strip=True, include_model=False, get_trace_table=True):
         """Store all beams in a single HDU
         TBD
         """ 
@@ -1465,7 +1677,10 @@ class MultiBeam(GroupFitter):
          
         count = []
         for ib, beam in enumerate(self.beams):
-            hdu_i = beam.write_fits(get_hdu=True, strip=True)
+            hdu_i = beam.write_fits(get_hdu=True, strip=strip, 
+                                    include_model=include_model,
+                                    get_trace_table=get_trace_table)
+                                    
             hdu.extend(hdu_i[1:])
             count.append(len(hdu_i)-1)
             hdu[0].header['FILE{0:04d}'.format(ib)] = (beam.grism.parent_file, 'Grism parent file')
@@ -1488,15 +1703,21 @@ class MultiBeam(GroupFitter):
         if verbose:
             print(outfile)
         
-        hdu.writeto(outfile, clobber=True)
+        hdu.writeto(outfile, overwrite=True)
     
     def load_master_fits(self, beam_file, verbose=True):
+        """
+        Load a "beams.fits" file.
+        """
         import copy
         
         try:
             utils.fetch_acs_wcs_files(beam_file)
         except:
             pass
+        
+        if verbose:
+            print('load_master_fits: {0}'.format(beam_file))
             
         hdu = pyfits.open(beam_file, lazy_load_hdus=False)
         N = hdu[0].header['COUNT']
@@ -1519,7 +1740,8 @@ class MultiBeam(GroupFitter):
                 hducopy = pyfits.HDUList([hdu[i].__class__(data=hdu[i].data*1, header=copy.deepcopy(hdu[i].header), name=hdu[i].name) for i in range(i0, i0+Next_i)])
             
             beam = model.BeamCutout(fits_file=hducopy, min_mask=self.min_mask,
-                                    min_sens=self.min_sens) 
+                                    min_sens=self.min_sens, 
+                                    mask_resid=self.mask_resid) 
             
             self.beams.append(beam)
             if verbose:
@@ -1553,9 +1775,92 @@ class MultiBeam(GroupFitter):
             
             beam = model.BeamCutout(fits_file=file, conf=conf, 
                                     min_mask=self.min_mask, 
-                                    min_sens=self.min_sens)
+                                    min_sens=self.min_sens,
+                                    mask_resid=self.mask_resid)
             self.beams.append(beam)
+    
+    def replace_direct_image_cutouts(self, ref_image='gdn-100mas-f160w_drz_sci.fits', interp='poly5', cutout=200, background_func=np.median):
+        """
+        Replace "REF" extensions in a `beams.fits` file
 
+        Parameters
+        ----------
+        ref_image : str or `~astropy.io.fits.HDUList`
+           Filename or preloaded FITS file.
+
+        interp : str
+            Interpolation function to use for `~drizzlepac.astrodrizzle.ablot.do_blot`.
+
+        cutout : int
+            Make a slice of the `ref_image` with size [-cutout,+cutout] around
+            the center position of the desired object before passing to `blot`.
+
+        Returns
+        -------
+        beams_image : `~astropy.io.fits.HDUList`
+            Image object with the "REF" extensions filled with the new blotted
+            image cutouts.
+
+        """
+        from drizzlepac.astrodrizzle import ablot
+
+        if isinstance(ref_image, pyfits.HDUList):
+            ref_im = ref_image
+            ref_image_filename = ref_image.filename()
+        else:
+            ref_im = pyfits.open(ref_image)
+            ref_image_filename = ref_image
+
+        ref_wcs = pywcs.WCS(ref_im[0].header, relax=True)
+        ref_wcs.pscale = utils.get_wcs_pscale(ref_wcs)
+
+        ref_photflam = ref_im[0].header['PHOTFLAM']
+        ref_photplam = ref_im[0].header['PHOTPLAM']
+        ref_filter = utils.get_hst_filter(ref_im[0].header)
+        
+        ref_data = ref_im[0].data
+
+        beam_ra, beam_dec = self.ra, self.dec
+
+        xy = np.cast[int](np.round(ref_wcs.all_world2pix([beam_ra], [beam_dec], 0))).flatten()
+
+        slx = slice(xy[0]-cutout, xy[0]+cutout)
+        sly = slice(xy[1]-cutout, xy[1]+cutout)
+        
+        bkg_data = None
+        
+        for ie in range(self.N):
+            
+            wcs_copy = self.beams[ie].direct.wcs
+            if hasattr(wcs_copy, 'idcscale'):
+                if wcs_copy.idcscale is None:
+                    delattr(wcs_copy, 'idcscale')
+                    
+            blotted = ablot.do_blot(ref_data[sly, slx], 
+                              ref_wcs.slice([sly, slx]), 
+                              wcs_copy, 1, coeffs=True, interp=interp, 
+                              sinscl=1.0, stepsize=10, wcsmap=None)
+
+            if background_func is not None:
+                msk = self.beams[ie].beam.seg == 0
+                #print(msk.shape, blotted.shape, ie)
+                if msk.sum() > 0:
+                    if bkg_data is None:
+                        bkg_data = blotted[msk]
+                    else:
+                        bkg_data = np.append(bkg_data, blotted[msk])
+
+            self.beams[ie].direct.data['REF'] = blotted*ref_photflam 
+            self.beams[ie].direct.ref_photflam = ref_photflam
+            self.beams[ie].direct.ref_photplam = ref_photplam
+            self.beams[ie].direct.ref_filter = ref_filter
+            #self.beams[ie].direct.ref_photflam
+        
+        if bkg_data is not None:
+            bkg_value = background_func(bkg_data)
+            for ie in range(self.N):
+                self.beams[ie].direct.data['REF'] -= bkg_value*ref_photflam
+                
     def reshape_flat(self, flat_array):
         """TBD
         """
@@ -1606,12 +1911,13 @@ class MultiBeam(GroupFitter):
         yfull = np.polyval(scale_coeffs[::-1], xspec)
         return xspec, yfull
                                           
-    def compute_model(self, id=None, spectrum_1d=None, is_cgs=False):
+    def compute_model(self, id=None, spectrum_1d=None, is_cgs=False, apply_sensitivity=True):
         """TBD
         """
         for beam in self.beams:
             beam.beam.compute_model(id=id, spectrum_1d=spectrum_1d, 
-                                    is_cgs=is_cgs)
+                                    is_cgs=is_cgs,
+                                    apply_sensitivity=apply_sensitivity)
             
             beam.modelf = beam.beam.modelf 
             beam.model = beam.beam.modelf.reshape(beam.beam.sh_beam)
@@ -2646,7 +2952,7 @@ class MultiBeam(GroupFitter):
 
         return drizzled_segm
         
-    def drizzle_fit_lines(self, fit, pline, force_line=['Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True, verbose=True, include_segmentation=True, get_ir_psfs=True):
+    def drizzle_fit_lines(self, fit, pline, force_line=['Ha+NII', 'Ha', 'OIII', 'Hb', 'OII'], save_fits=True, mask_lines=True, mask_sn_limit=3, mask_4959=True, verbose=True, include_segmentation=True, get_ir_psfs=True, min_line_sn=4):
         """
         TBD
         """
@@ -2697,7 +3003,11 @@ class MultiBeam(GroupFitter):
             if line_err == 0:
                 continue
 
-            if (line_flux/line_err > 4) | (line in force_line):
+            # Skip if min_line_sn = inf
+            if not np.isfinite(min_line_sn):
+                continue
+                
+            if (line_flux/line_err > min_line_sn) | (line in force_line):
                 if verbose:
                     print('Drizzle line -> {0:4s} ({1:.2f} {2:.2f})'.format(line, line_flux/1.e-17, line_err/1.e-17))
 
@@ -2713,7 +3023,7 @@ class MultiBeam(GroupFitter):
                             pscale_array = beam.beam.pscale_array
                         else:
                             pscale_array = 1.
-                            
+                        
                         ### another idea, compute a model for the line itself
                         ### and mask relatively "contaminated" pixels from 
                         ### other lines
@@ -2723,7 +3033,8 @@ class MultiBeam(GroupFitter):
                         except:
                             key = 'line '+ line
                             lm = fit['templates'][key]
-                            scl = fit['cfit'][key][0]/(1+z_driz)
+                            line_flux = fit['cfit'][key][0]
+                            scl = line_flux/(1+z_driz)
                             sp = [lm.wave*(1+z_driz), lm.flux*scl]
                             
                         #lm = fit['line1d'][line]
@@ -2732,11 +3043,15 @@ class MultiBeam(GroupFitter):
                             continue
                         
                         #sp = [lm.wave, lm.flux]
-                        m = beam.compute_model(spectrum_1d=sp, 
+                        if line_flux > 0:
+                            m = beam.compute_model(spectrum_1d=sp, 
                                                in_place=False, is_cgs=True)
-                        lmodel = m.reshape(beam.beam.sh_beam)*pscale_array
-                        if lmodel.max() == 0:
-                            continue
+                            lmodel = m.reshape(beam.beam.sh_beam)*pscale_array
+                        else:
+                            lmodel = np.zeros(beam.beam.sh_beam)
+                            
+                        # if lmodel.max() == 0:
+                        #     continue
                         
                         if 'cfit' in fit:
                             keys = fit['cfit']
@@ -2752,7 +3067,7 @@ class MultiBeam(GroupFitter):
                             key = lkey.replace('line ', '')
                             lf, le = line_flux_dict[key]
                             ### Don't mask if the line missing or undetected
-                            if (lf == 0):# | (lf < mask_sn_limit*le):
+                            if (lf <= 0):# | (lf < mask_sn_limit*le):
                                 continue
                                 
                             if key != line:
@@ -2779,8 +3094,14 @@ class MultiBeam(GroupFitter):
                                     continue
 
                                 beam.extra_lines += lcontam
-                                    
-                                beam.ivar[lcontam > mask_sn_limit*lmodel] *= 0
+                                
+                                # Only mask if line flux > 0
+                                if line_flux > 0:
+                                    extra_msk = lcontam > mask_sn_limit*lmodel
+                                    extra_msk &= (lcontam > 0)
+                                    extra_msk &= (lmodel > 0)
+                                
+                                    beam.ivar[extra_msk] *= 0
                         
                         # Subtract 4959
                         if (line == 'OIII') & ('cfit' in fit) & mask_4959:
@@ -2902,12 +3223,13 @@ class MultiBeam(GroupFitter):
                     hdu_full.append(psf[1])
                     
         if save_fits:
-            hdu_full.writeto('{0}_{1:05d}.line.fits'.format(self.group_name, self.id), clobber=True, output_verify='silentfix')
+            hdu_full.writeto('{0}_{1:05d}.line.fits'.format(self.group_name, self.id), overwrite=True, output_verify='silentfix')
         
         return hdu_full
         
     def run_full_diagnostics(self, pzfit={}, pspec2={}, pline={}, 
-                      force_line=['Ha', 'OIII', 'Hb', 'OII'], GroupFLT=None,
+                      force_line=['Ha+NII', 'Ha', 'OIII', 'Hb', 'OII'],
+                      GroupFLT=None,
                       prior=None, zoom=True, verbose=True):
         """TBD
         
@@ -3027,7 +3349,7 @@ class MultiBeam(GroupFitter):
         fig.savefig('{0}_{1:05d}.zfit.png'.format(self.group_name, self.id))
         
         #fig2.savefig('{0}_{1:05d}.zfit.2D.png'.format(self.group_name, self.id))
-        #hdu2.writeto('{0}_{1:05d}.zfit.2D.fits'.format(self.group_name, self.id), clobber=True, output_verify='silentfix')
+        #hdu2.writeto('{0}_{1:05d}.zfit.2D.fits'.format(self.group_name, self.id), overwrite=True, output_verify='silentfix')
         
         label = '# id ra dec zbest '
         data = '{0:7d} {1:.6f} {2:.6f} {3:.5f}'.format(self.id, self.ra, self.dec,
@@ -3096,12 +3418,18 @@ class MultiBeam(GroupFitter):
         ### Reset model profile for optimal extractions
         for b in self.beams:
             #b._parse_from_data()
+            if hasattr(b, 'has_sys_err'):
+                delattr(b, 'has_sys_err')
+                
             b._parse_from_data(contam_sn_mask=b.contam_sn_mask,
-                                  min_mask=b.min_mask, min_sens=b.min_sens)
+                                  min_mask=b.min_mask, min_sens=b.min_sens,
+                                  mask_resid=b.mask_resid)
         
         self._parse_beam_arrays()
                 
-    def fit_trace_shift(self, split_groups=True, max_shift=5, tol=1.e-2, verbose=True, lm=False, fit_with_psf=False):
+    def fit_trace_shift(self, split_groups=True, max_shift=5, tol=1.e-2, 
+                        verbose=True, lm=False, fit_with_psf=False,
+                        reset=False):
         """TBD
         """
         from scipy.optimize import leastsq, minimize
@@ -3118,7 +3446,10 @@ class MultiBeam(GroupFitter):
         bounds = np.array([[-max_shift,max_shift]]*len(indices))
         
         args = (self, indices, 0, lm, verbose, fit_with_psf)
-        if lm:
+        if reset:
+            shifts = np.zeros(len(indices))
+            out = None
+        elif lm:
             out = leastsq(self.eval_trace_shift, s0, args=args, Dfun=None, full_output=0, col_deriv=0, ftol=1.49012e-08, xtol=1.49012e-08, gtol=0.0, maxfev=0, epsfcn=None, factor=100, diag=None)
             shifts = out[0]
         else:
@@ -3136,7 +3467,8 @@ class MultiBeam(GroupFitter):
         for b in self.beams:
             #b._parse_from_data()
             b._parse_from_data(contam_sn_mask=b.contam_sn_mask,
-                                  min_mask=b.min_mask, min_sens=b.min_sens)
+                                  min_mask=b.min_mask, min_sens=b.min_sens,
+                                  mask_resid=b.mask_resid)
             
             # Needed for background modeling
             if hasattr(b, 'xp'):
@@ -3340,8 +3672,13 @@ class MultiBeam(GroupFitter):
                     for beam in beams:
                         beam.compute_model()
 
-                data = [beam.beam.model for beam in beams]
-                    
+                data = []
+                for beam in beams:
+                    if hasattr(beam.beam, 'pscale_array'):
+                        data.append(beam.beam.model*beam.beam.pscale_array)
+                    else:
+                        data.append(beam.beam.model)
+                        
                 hdu_model = drizzle_function(beams, data=data, 
                                           wlimit=GRISM_LIMITS[g], dlam=dlam, 
                                           spatial_scale=scale, NY=size,
@@ -3435,8 +3772,15 @@ class MultiBeam(GroupFitter):
                 for beam in all_beams:
                     beam.compute_model()
 
-            data = [beam.beam.model for beam in all_beams]
-                
+            #data = [beam.beam.model for beam in all_beams]
+               
+            data = []
+            for beam in all_beams:
+                if hasattr(beam.beam, 'pscale_array'):
+                    data.append(beam.beam.model*beam.beam.pscale_array)
+                else:
+                    data.append(beam.beam.model)
+             
             hdu_model = drizzle_function(all_beams, data=data, 
                                       wlimit=GRISM_LIMITS[g], dlam=dlam, 
                                       spatial_scale=scale, NY=size,
@@ -3518,7 +3862,7 @@ class MultiBeam(GroupFitter):
             Update the mask.
         
         interp : str
-            Interpolation method for `~drizzlepac.astrodrizzle.ablot`.
+            Interpolation method for `~drizzlepac.ablot`.
             
         Returns
         -------
@@ -3530,7 +3874,7 @@ class MultiBeam(GroupFitter):
             from drizzle.doblot import doblot
             blotter = doblot
         except:
-            from drizzlepac.astrodrizzle import ablot
+            from drizzlepac import ablot
             blotter = ablot.do_blot
         
         # Read the drizzled arrays
@@ -3571,7 +3915,7 @@ class MultiBeam(GroupFitter):
             self._parse_beams()
             self.initialize_masked_arrays()
             
-    def oned_spectrum(self, tfit=None, **kwargs):
+    def oned_spectrum(self, tfit=None, get_contam=True, **kwargs):
         """Compute full 1D spectrum with optional best-fit model
         
         Parameters
@@ -3617,7 +3961,10 @@ class MultiBeam(GroupFitter):
         
         # Optimal spectral extraction
         sp = self.optimal_extract(self.scif_mask[:self.Nspec]-bg_model, **kwargs)
-        
+        if get_contam:
+            spc = self.optimal_extract(self.contamf_mask[:self.Nspec],
+                                       **kwargs)
+            
         # Loop through grisms, change units and add fit columns
         # NB: setting units to "count / s" to comply with FITS standard, 
         #     where count / s = electron / s
@@ -3629,6 +3976,10 @@ class MultiBeam(GroupFitter):
             sp[k]['flux'].unit = u.count / u.s
             sp[k]['err'].unit = u.count / u.s
             
+            if get_contam:
+                sp[k]['contam'] = spc[k]['flux']
+                sp[k]['contam'].unit = u.count / u.s
+                
             if tfit is not None:
                 sp[k]['line'] = sp_line[k]['flux']
                 sp[k]['line'].unit = u.count / u.s
@@ -3713,6 +4064,28 @@ class MultiBeam(GroupFitter):
             hdul.writeto(outputfile, overwrite=True)
             return hdul
     
+    def make_simple_hdulist(self):
+        """
+        Make a`~astropy.io.fits.HDUList` object with just a simple 
+        PrimaryHDU
+        """
+        p = pyfits.PrimaryHDU()
+        p.header['ID'] = (self.id, 'Object ID')
+        p.header['RA'] = (self.ra, 'R.A.')
+        p.header['DEC'] = (self.dec, 'Decl.')
+        p.header['NINPUT'] = (len(self.beams), 'Number of drizzled beams')
+        p.header['HASLINES'] = ('', 'Lines in this file')
+        
+        for i, beam in enumerate(self.beams):
+            p.header['FILE{0:04d}'.format(i+1)] = (beam.grism.parent_file, 
+                                                 'Parent filename')
+            p.header['GRIS{0:04d}'.format(i+1)] = (beam.grism.filter, 
+                                                 'Beam grism element')
+            p.header['PA{0:04d}'.format(i+1)] = (beam.get_dispersion_PA(), 
+                                                 'PA of dispersion axis')
+        
+        return pyfits.HDUList(p)
+        
     def check_for_bad_PAs(self, poly_order=1, chi2_threshold=1.5, fit_background=True, reinit=True):
         """
         """
@@ -3733,7 +4106,10 @@ class MultiBeam(GroupFitter):
             for pa in self.PA[g]:
                 beams = [self.beams[i] for i in self.PA[g][pa]]
                 mb_i = MultiBeam(beams, fcontam=self.fcontam,
-                                 sys_err=self.sys_err)
+                                 sys_err=self.sys_err, min_sens=self.min_sens,
+                                 min_mask=self.min_mask, 
+                                 mask_resid=self.mask_resid, 
+                                 MW_EBV=self.MW_EBV)
                               
                 try:
                     chi2, _, _, _ = mb_i.xfit_at_z(z=0,
@@ -3840,21 +4216,21 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
         
     """
     from astropy import log
-    try:
-        import drizzle
-        if drizzle.__version__ != '1.12.99':
-            # Not the fork that works for all input/output arrays
-            raise(ImportError)
-        
-        #print('drizzle!!')
-        from drizzle.dodrizzle import dodrizzle
-        drizzler = dodrizzle
-        dfillval = '0'
-    except:
-        from drizzlepac.astrodrizzle import adrizzle
-        adrizzle.log.setLevel('ERROR')
-        drizzler = adrizzle.do_driz
-        dfillval = 0
+    # try:
+    #     import drizzle
+    #     if drizzle.__version__ != '1.12.99':
+    #         # Not the fork that works for all input/output arrays
+    #         raise(ImportError)
+    #     
+    #     #print('drizzle!!')
+    #     from drizzle.dodrizzle import dodrizzle
+    #     drizzler = dodrizzle
+    #     dfillval = '0'
+    # except:
+    from drizzlepac import adrizzle
+    adrizzle.log.setLevel('ERROR')
+    drizzler = adrizzle.do_driz
+    dfillval = 0
     
     log.setLevel('ERROR')
     #log.disable_warnings_logging()
@@ -3885,6 +4261,8 @@ def drizzle_2d_spectrum(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     for i, beam in enumerate(beams):
         ## Get specific WCS for each beam
         beam_header, beam_wcs = beam.full_2d_wcs()
+        if not hasattr(beam_wcs, 'pixel_shape'):
+            beam_wcs.pixel_shape = beam_wcs._naxis1, beam_wcs._naxis2
         
         # Downweight contamination
         # wht = 1/beam.ivar + (fcontam*beam.contam)**2
@@ -4055,21 +4433,21 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
         FITS HDUList with the drizzled thumbnail, line and continuum 
         cutouts.
     """
-    try:
-        import drizzle
-        if drizzle.__version__ != '1.12.99':
-            # Not the fork that works for all input/output arrays
-            raise(ImportError)
-        
-        #print('drizzle!!')
-        from drizzle.dodrizzle import dodrizzle
-        drizzler = dodrizzle
-        dfillval = '0'
-    except:
-        from drizzlepac.astrodrizzle import adrizzle
-        adrizzle.log.setLevel('ERROR')
-        drizzler = adrizzle.do_driz
-        dfillval = 0
+    # try:
+    #     import drizzle
+    #     if drizzle.__version__ != '1.12.99':
+    #         # Not the fork that works for all input/output arrays
+    #         raise(ImportError)
+    #     
+    #     #print('drizzle!!')
+    #     from drizzle.dodrizzle import dodrizzle
+    #     drizzler = dodrizzle
+    #     dfillval = '0'
+    # except:
+    from drizzlepac import adrizzle
+    adrizzle.log.setLevel('ERROR')
+    drizzler = adrizzle.do_driz
+    dfillval = 0
         
     # Nothing to do
     if len(beams) == 0:
@@ -4128,6 +4506,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
     for i, beam in enumerate(beams):
         ## Get specific wavelength WCS for each beam
         beam_header, beam_wcs = beam.get_wavelength_wcs(wave)
+        
+        if not hasattr(beam_wcs, 'pixel_shape'):
+            beam_wcs.pixel_shape = beam_wcs._naxis1, beam_wcs._naxis2
+        
         ## Make sure CRPIX set correctly for the SIP header
         for j in [0,1]: 
             # if beam_wcs.sip is not None:
@@ -4190,7 +4572,7 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             beam_continuum /= sens
         
         ###### Go drizzle
-        
+                
         ### Contamination-cleaned
         drizzler(beam_data, beam_wcs, wht, output_wcs, 
                          outsci, outwht, outctx, 1., 'cps', 1,
@@ -4219,7 +4601,10 @@ def drizzle_to_wavelength(beams, wcs=None, ra=0., dec=0., wave=1.e4, size=5,
             thumb = beam.direct[direct_extension]#/beam.direct.photflam
             thumb_wht = 1./(beam.direct.data['ERR']/beam.direct.photflam)**2
             thumb_wht[~np.isfinite(thumb_wht)] = 0
-            
+        
+        if not hasattr(beam.direct.wcs, 'pixel_shape'):
+            beam.direct.wcs.pixel_shape = beam.direct.wcs._naxis1, beam.direct.wcs._naxis2
+           
         drizzler(thumb, beam.direct.wcs, thumb_wht, output_wcs, 
                          doutsci[filt_i], doutwht[filt_i], doutctx[filt_i], 
                          1., 'cps', 1, 
@@ -4490,21 +4875,21 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
         FITS HDUList with the drizzled 2D spectrum and weight arrays
         
     """
-    try:
-        import drizzle
-        if drizzle.__version__ != '1.12.99':
-            # Not the fork that works for all input/output arrays
-            raise(ImportError)
-        
-        #print('drizzle!!')
-        from drizzle.dodrizzle import dodrizzle
-        drizzler = dodrizzle
-        dfillval = '0'
-    except:
-        from drizzlepac.astrodrizzle import adrizzle
-        adrizzle.log.setLevel('ERROR')
-        drizzler = adrizzle.do_driz
-        dfillval = 0
+    # try:
+    #     import drizzle
+    #     if drizzle.__version__ != '1.12.99':
+    #         # Not the fork that works for all input/output arrays
+    #         raise(ImportError)
+    #     
+    #     #print('drizzle!!')
+    #     from drizzle.dodrizzle import dodrizzle
+    #     drizzler = dodrizzle
+    #     dfillval = '0'
+    # except:
+    from drizzlepac import adrizzle
+    adrizzle.log.setLevel('ERROR')
+    drizzler = adrizzle.do_driz
+    dfillval = 0
 
     from stwcs import distortion
     from astropy import log
@@ -4615,6 +5000,9 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
         for wcs_ext in [beam_wcs.cpdis1, beam_wcs.cpdis2, beam_wcs.det2im1, beam_wcs.det2im2]:
             if wcs_ext is not None:
                 wcs_ext.crval[1] += dy
+        
+        if not hasattr(beam_wcs, 'pixel_shape'):
+            beam_wcs.pixel_shape = beam_wcs._naxis1, beam_wcs._naxis2
                 
         d_beam_wcs = beam.direct.wcs
         if beam.direct['REF'] is None:
@@ -4657,6 +5045,7 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
             data_i[~np.isfinite(data_i+scl)] = 0
         
         ###### Go drizzle
+        
         data_wave = np.dot(np.ones(beam.beam.sh_beam[0])[:,None], beam.beam.lam[None,:])
         drizzler(data_wave, beam_wcs, wht*0.+1, output_wcs, 
                          outls, outlw, outlc, 1., 'cps', 1,

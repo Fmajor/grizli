@@ -179,6 +179,8 @@ class StackFitter(GroupFitter):
         self.ra = self.h0['RA']
         self.dec = self.h0['DEC']
         
+        self.Asave = {}
+        
         ## Photometry
         self.is_spec = 1
         self.Nphot = 0
@@ -205,6 +207,8 @@ class StackFitter(GroupFitter):
                     extra = StackFitter(files=file, sys_err=sys_err, mask_min=mask_min, fit_stacks=fit_stacks, fcontam=fcontam, pas=pas, extensions=extensions, min_ivar=min_ivar, overlap_threshold=overlap_threshold, eazyp=eazyp, eazy_ix=eazy_ix, chi2_threshold=chi2_threshold, verbose=verbose)
                     self.extend(extra)
                     
+        self.idf = np.hstack([b.scif*0+ib for ib, b in enumerate(self.beams)])
+        self.idf = np.cast[int](self.idf)
                     
         # if eazyp is not None:
         #     self.eazyp = eazyp
@@ -289,7 +293,8 @@ class StackFitter(GroupFitter):
         
         self.slices = self._get_slices(masked=False)
         self.A_bg = self._init_background(masked=False)
-
+        self.Asave = {}
+        
         self._update_beam_mask()
         self.A_bgm = self._init_background(masked=True)
         
@@ -758,7 +763,7 @@ class StackFitter(GroupFitter):
         
         from . import utils
         
-        t_complex, t_i = np.load(templates_file)
+        t_complex, t_i = np.load(templates_file, allow_pickle=True)
         
         z = utils.log_zgrid(zr=zr, dz=dz0)
         chi2 = z*0.
@@ -951,7 +956,7 @@ class StackFitter(GroupFitter):
         """
         TBD
         """
-        t_complex, t_i = np.load(templates_file)
+        t_complex, t_i = np.load(templates_file, allow_pickle=True)
         
         # Best-fit templates
         for i, te in enumerate(t_i):
@@ -1301,11 +1306,13 @@ class StackedSpectrum(object):
         """
         self.MW_F99 = None
         if MW_EBV > 0:
-            try:
-                from specutils.extinction import ExtinctionF99
-                self.MW_F99 = ExtinctionF99(MW_EBV*R_V, r_v=R_V)
-            except(ImportError):
-                print('Couldn\'t import `specutils.extinction`, MW extinction not implemented')
+            self.MW_F99 = utils.MW_F99(MW_EBV*R_V, r_v=R_V)
+            
+            # try:
+            #     from specutils.extinction import ExtinctionF99
+            #     self.MW_F99 = ExtinctionF99(MW_EBV*R_V, r_v=R_V)
+            # except(ImportError):
+            #     print('Couldn\'t import `specutils.extinction`, MW extinction not implemented')
                 
     @classmethod    
     def get_wavelength_from_header(self, h):
@@ -1328,11 +1335,11 @@ class StackedSpectrum(object):
         m[m < 0] = 0
         self.optimal_profile = m/m.sum(axis=0)
                
-    def optimal_extract(self, data, bin=0, ivar=None, weight=None):
+    def optimal_extract(self, data, bin=0, ivar=None, weight=None, loglam=False):
         """
         Optimally-weighted 1D extraction
         
-        xx Dummy parameters ivar & weight
+        xx Dummy parameters ivar, weight, loglam
         """
         import scipy.ndimage as nd
         

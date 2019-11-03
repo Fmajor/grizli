@@ -1,6 +1,7 @@
 """General utilities"""
 import os
 import glob
+import inspect
 from collections import OrderedDict
 
 import warnings
@@ -68,7 +69,10 @@ GRISM_LIMITS = {'G800L':[0.545, 1.02, 40.], # ACS/WFC
            'BLUE':[0.8, 1.2, 10.], # Euclid
            'RED':[1.1, 1.9, 14.]}
 
-DEFAULT_LINE_LIST = ['PaB', 'HeI-1083', 'SIII', 'SII', 'Ha', 'OI-6302', 'OIII', 'Hb', 'OIII-4363', 'Hg', 'Hd', 'NeIII-3867', 'OII', 'NeVI-3426', 'NeV-3346', 'MgII','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'NIII-1750', 'NIV-1487', 'NV-1240', 'Lya']
+#DEFAULT_LINE_LIST = ['PaB', 'HeI-1083', 'SIII', 'OII-7325', 'ArIII-7138', 'SII', 'Ha+NII', 'OI-6302', 'HeI-5877', 'OIII', 'Hb', 'OIII-4363', 'Hg', 'Hd', 'H8','H9','NeIII-3867', 'OII', 'NeVI-3426', 'NeV-3346', 'MgII','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'NIII-1750', 'NIV-1487', 'NV-1240', 'Lya']
+
+# Line species for determining individual line fluxes.  See `load_templates`.
+DEFAULT_LINE_LIST = ['PaB', 'HeI-1083', 'SIII', 'OII-7325', 'ArIII-7138', 'SII', 'Ha', 'OI-6302', 'HeI-5877', 'OIII', 'Hb', 'OIII-4363', 'Hg', 'Hd', 'H7','H8','H9','H10','NeIII-3867','OII', 'NeVI-3426', 'NeV-3346', 'MgII','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'NIII-1750', 'NIV-1487', 'NV-1240', 'Lya']
 
 def set_warnings(numpy_level='ignore', astropy_level='ignore'):
     """
@@ -137,48 +141,90 @@ def get_flt_info(files=[], columns=['FILE', 'FILTER', 'INSTRUME', 'DETECTOR', 'T
     tab = Table(rows=data, names=has_columns)
     return tab
 
-def radec_to_targname(ra=0, dec=0, header=None):
-    """Turn decimal degree coordinates into a string
-    
+def radec_to_targname(ra=0, dec=0, round_arcsec=(4, 60), precision=2, targstr='j{rah}{ram}{ras}{sign}{ded}{dem}', header=None):
+    """Turn decimal degree coordinates into a string with rounding.
+
     Example:
 
-        >>> from grizli.utils import radec_to_targname
-        >>> print(radec_to_targname(ra=10., dec=-10.))
-        j004000-100000
-    
+        # Test dec: -10d10m10.10s
+        >>> dec = -10. - 10./60. - 10.1/3600
+
+        # Test ra: 02h02m02.20s
+        >>> cosd = np.cos(dec/180*np.pi)
+        >>> ra = 2*15 + 2./60*15 + 2.2/3600.*15
+
+        # Round to nearest arcmin
+        >>> from mastquery.utils import radec_to_targname
+        >>> print(radec_to_targname(ra=ra, dec=dec, round_arcsec=(4,60),
+                               targstr='j{rah}{ram}{ras}{sign}{ded}{dem}'))
+        j020204m1010 # (rounded to 4 arcsec in RA)
+
+        # Full precision
+        >>> targstr = 'j{rah}{ram}{ras}.{rass}{sign}{ded}{dem}{des}.{dess}'
+        >>> print(radec_to_targname(ra, dec,round_arcsec=(0.0001, 0.0001),
+                                    precision=3, targstr=targstr))
+        j020202.200m101010.100
+
     Parameters
     -----------
     ra, dec : float
         Sky coordinates in decimal degrees
-    
-    header : `~astropy.io.fits.Header` or None
-        Optional FITS header with CRVAL or RA/DEC_TARG keywords.  If 
-        specified, read `ra`/`dec` from CRVAL1/CRVAL2 or RA_TARG/DEC_TARG
-        keywords, whichever are available
-    
+
+    round_arcsec : (scalar, scalar) 
+        Round the coordinates to nearest value of `round`, in arcseconds.
+
+    precision : int
+        Sub-arcsecond precision, in `~astropy.coordinates.SkyCoord.to_string`.
+
+    targstr : string
+        Build `targname` with this parent string.  Arguments 
+        `rah, ram, ras, rass, sign, ded, dem, des, dess` are computed from the 
+        (rounded) target coordinates (`ra`, `dec`) and passed to 
+        `targstr.format`.
+
+    header : `~astropy.io.fits.Header`, None
+        Try to get `ra`, `dec` from header keywords, first `CRVAL` and then
+        `RA_TARG`, `DEC_TARG`.
+
     Returns
     --------
     targname : str
-        Target name like jHHMMSS[+-]DDMMSS.
-    
+        Target string, see the example above.
+
     """
     import astropy.coordinates 
     import astropy.units as u
+
     import re
-    
+    import numpy as np
+
     if header is not None:
         if 'CRVAL1' in header:
             ra, dec = header['CRVAL1'], header['CRVAL2']
         else:
             if 'RA_TARG' in header:
                 ra, dec = header['RA_TARG'], header['DEC_TARG']
-    
-    coo = astropy.coordinates.SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
-    
-    cstr = re.split('[hmsd.]', coo.to_string('hmsdms', precision=2))
-    targname = ('j{0}{1}'.format(''.join(cstr[0:3]), ''.join(cstr[4:7])))
-    targname = targname.replace(' ', '')
-    
+
+    cosd = np.cos(dec/180*np.pi)
+    scl = np.array(round_arcsec)/3600*np.array([360/24, 1])
+
+    dec_scl = int(np.round(dec/scl[1]))*scl[1]
+    ra_scl = int(np.round(ra/scl[0]))*scl[0]
+
+    coo = astropy.coordinates.SkyCoord(ra=ra_scl*u.deg, dec=dec_scl*u.deg)
+
+    cstr = re.split('[hmsd.]', coo.to_string('hmsdms', precision=precision))
+    # targname = ('j{0}{1}'.format(''.join(cstr[0:3]), ''.join(cstr[4:7])))
+    # targname = targname.replace(' ', '').replace('+','p').replace('-','m')
+
+    rah, ram, ras, rass = cstr[0:4]
+    ded, dem, des, dess = cstr[4:8]
+    sign = 'p' if ded[1] == '+' else 'm'
+
+    targname = targstr.format(rah=rah, ram=ram, ras=ras, rass=rass,
+                              ded=ded[2:], dem=dem, des=des, dess=dess,
+                              sign=sign)
+
     return targname
     
 def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1, 
@@ -195,10 +241,10 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
         Input data to blot.
     
     in_wcs : `~astropy.wcs.WCS`
-        Input WCS.  Must have _naxis1, _naxis2 attributes.
+        Input WCS.  Must have _naxis1, _naxis2 or pixel_shape attributes.
         
     out_wcs : `~astropy.wcs.WCS`
-        Output WCS.  Must have _naxis1, _naxis2 attributes.
+        Output WCS.  Must have _naxis1, _naxis2 or pixel_shape attributes.
    
     scale_by_pixel_area : bool
         If True, then scale the output image by the square of the image pixel
@@ -237,15 +283,23 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
         from stwcs.wcsutil import HSTWCS
         source_wcs = HSTWCS(fobj=out, ext=('SCI',ext), minerr=0.0, wcskey=' ')
         blot_wcs = HSTWCS(fobj=im, ext=(0), minerr=0.0, wcskey=' ')
+    
+    # Shapes, in numpy array convention (y, x)
+    if hasattr(in_wcs, 'pixel_shape'):  
+        in_sh = in_wcs.pixel_shape[::-1]
+    else:
+        in_sh = (in_wcs._naxis2, in_wcs._naxis1)
         
-    in_sh = (in_wcs._naxis2, in_wcs._naxis1)
-    out_sh = (out_wcs._naxis2, out_wcs._naxis1)
+    if hasattr(out_wcs, 'pixel_shape'):
+        out_sh = out_wcs.pixel_shape[::-1]
+    else:
+        out_sh = (out_wcs._naxis2, out_wcs._naxis1)
             
     in_px = in_wcs.calc_footprint()
-    in_poly = Polygon(in_px)
+    in_poly = Polygon(in_px).buffer(5./3600.)
      
     out_px = out_wcs.calc_footprint()
-    out_poly = Polygon(out_px)
+    out_poly = Polygon(out_px).buffer(5./3600)
 
     olap = in_poly.intersection(out_poly)
     if olap.area == 0:
@@ -256,28 +310,32 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
     olap_poly = np.array(olap.exterior.xy)
     poly_reg = "fk5\npolygon("+','.join(['{0}'.format(p) for p in olap_poly.T.flatten()])+')\n'
     reg = pyregion.parse(poly_reg)
-    mask = reg.get_mask(header=to_header(in_wcs), shape=in_sh)
+    mask = reg.get_mask(header=to_header(out_wcs), shape=out_sh)
     
     #yp, xp = np.indices(in_data.shape)
     #xi, yi = xp[mask], yp[mask]
-    yi, xi = np.where(mask > 0)
+    yo, xo = np.where(mask > 0)
     
     if stepsize <= 1:        
-        rd = in_wcs.all_pix2world(xi, yi, 0)
-        xf, yf = out_wcs.all_world2pix(rd[0], rd[1], 0)
+        rd = out_wcs.all_pix2world(xo, yo, 0)
+        xf, yf = in_wcs.all_world2pix(rd[0], rd[1], 0)
     else:
         ## Seems backwards and doesn't quite agree with above
-        blot_wcs = in_wcs
-        source_wcs = out_wcs
-        
-        nx, ny = int(blot_wcs._naxis1), int(blot_wcs._naxis2)
+        blot_wcs = out_wcs
+        source_wcs = in_wcs
+
+        if hasattr(blot_wcs, 'pixel_shape'):
+            nx, ny = blot_wcs.pixel_shape
+        else:
+            nx, ny = int(blot_wcs._naxis1), int(blot_wcs._naxis2)
+
         mapping = cdriz.DefaultWCSMapping(blot_wcs, source_wcs, nx, ny,
                                           stepsize)
-        xf, yf = mapping(xi+1, yi+1)
+        xf, yf = mapping(xo, yo)
         
-    xo, yo = np.cast[int](np.round(xf)), np.cast[int](np.round(yf))
+    xi, yi = np.cast[int](np.round(xf)), np.cast[int](np.round(yf))
         
-    m2 = (xo >= 0) & (yo >= 0) & (xo < out_sh[1]) & (yo < out_sh[0])
+    m2 = (xi >= 0) & (yi >= 0) & (xi < in_sh[1]) & (yi < in_sh[0])
     xi, yi, xf, yf, xo, yo = xi[m2], yi[m2], xf[m2], yf[m2], xo[m2], yo[m2]
     
     out_data = np.zeros(out_sh, dtype=np.float)
@@ -304,7 +362,7 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                                  'GNGRISM':'goodsn-', 
                                  'GOODS-SOUTH-':'goodss-', 
                                  'UDS-':'uds-'},
-                    visit_split_shift=1.5):
+                    visit_split_shift=1.5, max_dt=1e9):
     """Read header information from a list of exposures and parse out groups based on filter/target/orientation.
     
     Parameters
@@ -525,7 +583,7 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
     if visit_split_shift > 0:
         split_list = []
         for o in output_list:
-            split_list.extend(split_visit(o,
+            split_list.extend(split_visit(o, max_dt=max_dt, 
                               visit_split_shift=visit_split_shift))
         
         output_list = split_list
@@ -563,7 +621,7 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
             
     return output_list, filter_list
 
-def split_visit(visit, visit_split_shift=1.5, path='../RAW'):
+def split_visit(visit, visit_split_shift=1.5, max_dt=6./24, path='../RAW'):
     """
     Check if files in a visit have large shifts and split them otherwise
     
@@ -575,13 +633,17 @@ def split_visit(visit, visit_split_shift=1.5, path='../RAW'):
     ims = [pyfits.open(os.path.join(path, file)) for file in visit['files']]
     crval1 = np.array([im[1].header['CRVAL1'] for im in ims])
     crval2 = np.array([im[1].header['CRVAL2'] for im in ims])
+    expstart = np.array([im[0].header['EXPSTART'] for im in ims])
+    dt = np.cast[int]((expstart-expstart[0])/max_dt)
     
     dx = (crval1 - crval1[0])*60*np.cos(crval2[0]/180*np.pi)
     dy = (crval2 - crval2[0])*60
     
     dxi = np.cast[int](np.round(dx/visit_split_shift))
     dyi = np.cast[int](np.round(dy/visit_split_shift))
-    keys = dxi*100+dyi
+    keys = dxi*100+dyi+1000*dt
+    #print(keys)
+    
     un = np.unique(keys)
     if len(un) == 1:
         return [visit]
@@ -591,9 +653,14 @@ def split_visit(visit, visit_split_shift=1.5, path='../RAW'):
         visits = []
         for i in range(len(un)):
             ix = keys == un[i]
-            spl[-2] = 'abcdefghi'[i]
-            visits.append({'files':list(np.array(visit['files'])[ix]), 
-                           'product':'-'.join(spl)})
+            spl[-2] = 'abcdefghijklmnopqrsuvwxyz'[i]
+            new_visit = {'files':list(np.array(visit['files'])[ix]), 
+                         'product':'-'.join(spl)}
+            
+            if 'footprints' in visit:
+                new_visit['footprints'] = list(np.array(visit['footprints'])[ix])
+                
+            visits.append(new_visit)
     
     return visits               
     
@@ -863,7 +930,258 @@ def get_hst_filter(header):
         raise KeyError ('Filter keyword not found for instrument {0}'.format(header['INSTRUME']))
     
     return filter.upper()
+
+EE_RADII = [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.8 , 1., 1.5, 2.]
+
+def tabulate_encircled_energy(aper_radii=EE_RADII, norm_radius=4.0):
     
+    import pysynphot as S
+    
+    from .pipeline import default_params
+    
+    # Default spectrum
+    sp = S.FlatSpectrum(25, fluxunits='ABMag')
+    
+    tab = GTable()
+    tab['radius'] = aper_radii*u.arcsec
+    tab.meta['RNORM'] = norm_radius, 'Normalization radius, arcsec'
+    
+    # IR
+    for f in default_params.IR_M_FILTERS+default_params.IR_W_FILTERS:
+        obsmode = 'wfc3,ir,'+f.lower()
+        print(obsmode)
+        tab[obsmode] = synphot_encircled_energy(obsmode=obsmode, sp=sp, aper_radii=aper_radii, norm_radius=norm_radius)
+        tab.meta['ZP_{0}'.format(obsmode)] = synphot_zeropoint(obsmode=obsmode, radius=norm_radius)
+        
+    # Optical.  Wrap in try/except to catch missing filters
+    for inst in ['acs,wfc1,', 'wfc3,uvis2,']:
+        for f in default_params.OPT_M_FILTERS+default_params.OPT_W_FILTERS:
+            obsmode = inst+f.lower()
+            
+            try:
+                tab[obsmode] = synphot_encircled_energy(obsmode=obsmode, sp=sp, aper_radii=aper_radii, norm_radius=norm_radius)
+                print(obsmode)
+                tab.meta['ZP_{0}'.format(obsmode)] = synphot_zeropoint(obsmode=obsmode, radius=norm_radius)
+            except:
+                continue
+    
+    tab.meta['PSYNVER'] = S.__version__, 'Pysynphot version'
+    
+    tab.write('hst_encircled_energy.fits', overwrite=True)
+    
+def synphot_zeropoint(obsmode='wfc3,ir,f160w', radius=4.0):
+    """
+    Compute synphot for a specific aperture
+    """        
+    import pysynphot as S
+    sp = S.FlatSpectrum(25, fluxunits='ABMag')
+    bp = S.ObsBandpass(obsmode+',aper#{0:.2f}'.format(radius))
+    obs = S.Observation(sp, bp)
+    ZP = 25 + 2.5*np.log10(obs.countrate())
+    return ZP
+    
+def synphot_encircled_energy(obsmode='wfc3,ir,f160w', sp='default', aper_radii=EE_RADII, norm_radius=4.0):
+    """
+    Compute encircled energy curves with pysynphot
+    """    
+    import pysynphot as S
+    
+    if sp == 'default':
+        sp = S.FlatSpectrum(25, fluxunits='ABMag')
+    
+    # Normalization
+    bp = S.ObsBandpass(obsmode+',aper#{0:.2f}'.format(norm_radius))
+    obs = S.Observation(sp, bp)
+    norm_counts = obs.countrate()
+    
+    counts = np.ones_like(aper_radii)    
+    for i, r_aper in enumerate(aper_radii):
+        #print(obsmode, r_aper)
+        bp = S.ObsBandpass(obsmode+',aper#{0:.2f}'.format(r_aper))
+        obs = S.Observation(sp, bp)
+        counts[i] = obs.countrate()
+    
+    return counts / norm_counts
+    
+def calc_header_zeropoint(im, ext=0):
+    """
+    Determine AB zeropoint from image header
+    
+    Parameters
+    ----------
+    im : `~astropy.io.fits.HDUList` or 
+        Image object or header.
+    
+    Returns
+    -------
+    ZP : float
+        AB zeropoint
+    
+    """
+    scale_exptime = 1.
+    
+    if isinstance(im, pyfits.Header):
+        header = im
+    else:
+        if '_dr' in im.filename():
+            ext = 0
+        elif '_fl' in im.filename():
+            if 'DETECTOR' in im[0].header:
+                if im[0].header['DETECTOR'] == 'IR':
+                    ext = 0
+                    bunit = im[1].header['BUNIT']
+                else:
+                    # ACS / UVIS
+                    if ext == 0:
+                        ext = 1
+
+                    bunit = im[1].header['BUNIT']
+                    
+                if bunit == 'ELECTRONS':
+                    scale_exptime = im[0].header['EXPTIME']
+                    
+        header = im[ext].header
+    
+    try:
+        fi = get_hst_filter(im[0].header).upper()
+    except:
+        fi = None
+             
+    ## Get AB zeropoint
+    if 'PHOTFNU' in header:
+        ZP = -2.5*np.log10(header['PHOTFNU'])+8.90
+        ZP += 2.5*np.log10(scale_exptime)
+    elif 'PHOTFLAM' in header:
+        ZP = (-2.5*np.log10(header['PHOTFLAM']) - 21.10 -
+              5*np.log10(header['PHOTPLAM']) + 18.6921)
+        
+        ZP += 2.5*np.log10(scale_exptime)
+    elif (fi is not None):
+        if fi in model.photflam_list:
+            ZP = (-2.5*np.log10(model.photflam_list[fi]) - 21.10 -
+                  5*np.log10(model.photplam_list[fi]) + 18.6921)
+        else:
+            print('Couldn\'t find PHOTFNU or PHOTPLAM/PHOTFLAM keywords, use ZP=25') 
+            ZP = 25
+    else:
+        print('Couldn\'t find FILTER, PHOTFNU or PHOTPLAM/PHOTFLAM keywords, use ZP=25') 
+        ZP = 25    
+    
+    # If zeropoint infinite (e.g., PHOTFLAM = 0), then calculate from synphot
+    if not np.isfinite(ZP):
+        try:
+            import pysynphot as S
+            bp = S.ObsBandpass(im[0].header['PHOTMODE'].replace(' ',','))
+            spec = S.FlatSpectrum(0, fluxunits='ABMag')
+            obs = S.Observation(spec, bp)
+            ZP = 2.5*np.log10(obs.countrate())
+        except:
+            pass
+            
+    return ZP
+
+DEFAULT_PRIMARY_KEYS = ['FILENAME','INSTRUME','INSTRUME','DETECTOR','FILTER','FILTER1','FILTER2','EXPSTART','DATE-OBS','EXPTIME','IDCTAB', 'NPOLFILE', 'D2IMFILE','PA_V3','FGSLOCK', 'GYROMODE', 'PROPOSID']
+
+# For grism
+DEFAULT_EXT_KEYS = ['EXTNAME', 'EXTVER', 'MDRIZSKY', 'CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2', 'PC1_1', 'PC1_2', 'PC2_1', 'PC2_2', 'CDELT1', 'CDELT2', 'CUNIT1', 'CUNIT2', 'CTYPE1', 'CTYPE2', 'RADESYS', 'LONPOLE', 'LATPOLE', 'IDCTAB', 'D2IMEXT', 'WCSNAME', 'PHOTMODE', 'ORIENTAT', 'CCDCHIP']
+
+def flt_to_dict(fobj, primary_keys=DEFAULT_PRIMARY_KEYS, extensions=[('SCI',i+1) for i in range(2)], ext_keys=DEFAULT_EXT_KEYS):
+    """
+    Parse basic elements from a FLT/FLC header to a dictionary
+    
+    TBD
+    
+    Parameters
+    ----------
+    fobj : `~astropy.io.fits.HDUList`
+        FITS object
+        
+    primary_keys : list
+        Keywords to extract from the primary extension (0).
+    
+    extensions : list
+        List of additional extension names / indices.
+    
+    ext_keys : list
+        Keywords to extract from the extension headers.
+        
+    Returns
+    -------
+    flt_dict : dict
+    
+    """        
+    import astropy.time
+    
+    flt_dict = OrderedDict()
+    flt_dict['timestamp'] = astropy.time.Time.now().iso
+    h0 = fobj[0].header
+    
+    # Primary keywords
+    for k in primary_keys:
+        if k in h0:
+            flt_dict[k] = h0[k]
+    
+    # Grism keys
+    for k in h0:
+        if k.startswith('GSKY'):
+            flt_dict[k] = h0[k]
+            
+    # WCS, etc. keywords from SCI extensions
+    flt_dict['extensions'] = OrderedDict()
+    count = 0
+    for ext in extensions:
+        if ext in fobj:
+            d_i = OrderedDict()
+            h_i = fobj[ext].header
+            for k in ext_keys:
+                if k in h_i:
+                    d_i[k] = h_i[k]
+            
+            # Grism keys
+            for k in h_i:
+                if k.startswith('GSKY'):
+                    d_i[k] = h_i[k]
+            
+            count += 1
+            flt_dict['extensions'][count] = d_i
+    
+    return flt_dict
+
+def get_set_bits(value):
+    """
+    Compute which binary bits are set for an integer
+    """
+    
+    if hasattr(value, '__iter__'):
+        values = value
+        single = False
+    else:
+        values = [value]
+        single = True
+    
+    result = []
+        
+    for v in values:
+        try:
+            bitstr = np.binary_repr(v)[::-1]
+        except:
+            result.append([])
+            
+        nset = bitstr.count('1')
+        setbits = []
+        
+        j = -1
+        for i in range(nset):
+            j = bitstr.index('1', j+1)
+            setbits.append(j)
+            
+        result.append(setbits)
+    
+    if single:
+        return result[0]
+    else:
+        return result
+        
 def unset_dq_bits(value, okbits=32+64+512, verbose=False):
     """
     Unset bit flags from a DQ array
@@ -908,7 +1226,7 @@ def detect_with_photutils(sci, err=None, dq=None, seg=None, detect_thresh=2.,
                                           'ycentroid': 'y_flt',
                                           'ra_icrs_centroid': 'ra',
                                           'dec_icrs_centroid': 'dec'},
-                        clobber=True, verbose=True):
+                        overwrite=True, verbose=True):
     """Use `photutils <https://photutils.readthedocs.io/>`__ to detect objects and make segmentation map
     
     Parameters
@@ -1036,9 +1354,9 @@ def detect_with_photutils(sci, err=None, dq=None, seg=None, detect_thresh=2.,
         else:
             header=None
             
-        pyfits.writeto(seg_file, data=seg, header=header, clobber=clobber)
+        pyfits.writeto(seg_file, data=seg, header=header, overwrite=overwrite)
             
-        if os.path.exists(seg_cat) & clobber:
+        if os.path.exists(seg_cat) & overwrite:
             os.remove(seg_cat)
         
         catalog.write(seg_cat, format='ascii.commented_header')
@@ -1082,8 +1400,16 @@ def get_line_wavelengths():
     """
     line_wavelengths = OrderedDict() ; line_ratios = OrderedDict()
     
-    line_wavelengths['PaB'] = [12821]
+    # Paschen: https://www.gemini.edu/sciops/instruments/nearir-resources/astronomical-lines/h-lines
+    line_wavelengths['PaA'] = [18751.0]
+    line_ratios['PaA'] = [1.]
+    line_wavelengths['PaB'] = [12821.6]
     line_ratios['PaB'] = [1.]
+    line_wavelengths['PaG'] = [10941.1]
+    line_ratios['PaG'] = [1.]
+    line_wavelengths['PaD'] = [10049.0]
+    line_ratios['PaD'] = [1.]
+    
     line_wavelengths['Ha'] = [6564.61]
     line_ratios['Ha'] = [1.]
     line_wavelengths['Hb'] = [4862.71]
@@ -1093,24 +1419,75 @@ def get_line_wavelengths():
     line_wavelengths['Hd'] = [4102.892]
     line_ratios['Hd'] = [1.]
 
-    line_wavelengths['H8'] = [3971.198]
+    line_wavelengths['H7'] = [3971.198]
+    line_ratios['H7'] = [1.]
+
+    line_wavelengths['H8'] = [3890.166]
     line_ratios['H8'] = [1.]
 
-    line_wavelengths['H9'] = [3890.166]
+    line_wavelengths['H9'] = [3836.485]
     line_ratios['H9'] = [1.]
 
-    line_wavelengths['H10'] = [3836.485]
+    line_wavelengths['H10'] = [3798.987]
     line_ratios['H10'] = [1.]
 
-    line_wavelengths['H11'] = [3798.987]
+    line_wavelengths['H11'] = [3771.70]
     line_ratios['H11'] = [1.]
-
+    
+    line_wavelengths['H12'] = [3751.22]
+    line_ratios['H12'] = [1.]
+    
     # Groves et al. 2011, Table 1
-    line_wavelengths['Balmer 10kK'] = [6564.61, 4862.68, 4341.68, 4101.73]
-    line_ratios['Balmer 10kK'] = [2.86, 1.0, 0.468, 0.259]
-
-    line_wavelengths['Balmer 10kK + MgII'] = [6564.61, 4862.68, 4341.68, 4101.73, 2799.117]
-    line_ratios['Balmer 10kK + MgII'] = [2.86, 1.0, 0.468, 0.259, 1.]
+    # Osterbrock table 4.4 for H7 to H10
+    # line_wavelengths['Balmer 10kK'] = [6564.61, 4862.68, 4341.68, 4101.73]
+    # line_ratios['Balmer 10kK'] = [2.86, 1.0, 0.468, 0.259]
+    
+    line_wavelengths['Balmer 10kK'] = [6564.61, 4862.68, 4341.68, 4101.73, 3971.198, 3890.166, 3836.485, 3798.987]
+    line_ratios['Balmer 10kK'] = [2.86, 1.0, 0.468, 0.259, 0.159, 0.105, 0.0731, 0.0530]
+    
+    # Paschen from Osterbrock, e.g., Pa-beta relative to H-gamma
+    line_wavelengths['Balmer 10kK'] += line_wavelengths['PaA'] + line_wavelengths['PaB'] + line_wavelengths['PaG'] + line_wavelengths['PaD']
+    line_ratios['Balmer 10kK'] += [0.348 * line_ratios['Balmer 10kK'][i] for i in [1,2,3,4]]
+    
+    # Osterbrock table 4.4 for H7 to H10
+    line_wavelengths['Balmer 10kK + MgII'] = line_wavelengths['Balmer 10kK'] + [2799.117]
+    line_ratios['Balmer 10kK + MgII'] = line_ratios['Balmer 10kK'] + [3.]
+    
+    # # Paschen from Osterbrock, e.g., Pa-beta relative to H-gamma
+    # line_wavelengths['Balmer 10kK + MgII'] += line_wavelengths['PaA'] + line_wavelengths['PaB'] + line_wavelengths['PaG']
+    # line_ratios['Balmer 10kK + MgII'] += [0.348 * line_ratios['Balmer 10kK + MgII'][i] for i in [1,2,3]]
+    
+    # With Paschen lines & He 10830 from Glikman 2006
+    # https://iopscience.iop.org/article/10.1086/500098/pdf
+    #line_wavelengths['Balmer 10kK + MgII'] = [6564.61, 4862.68, 4341.68, 4101.73, 3971.198, 2799.117, 12821.6, 10941.1]
+    #line_ratios['Balmer 10kK + MgII'] = [2.86, 1.0, 0.468, 0.259, 0.16, 3., 2.86*4.8/100, 2.86*1.95/100]
+    
+    # Redden with Calzetti00
+    try:
+        from extinction import calzetti00
+        Av = 1.0
+        Rv = 3.1
+        
+        waves = line_wavelengths['Balmer 10kK + MgII']
+        ratios = line_ratios['Balmer 10kK + MgII']
+        
+        for Av in [0.5, 1.0, 2.0]:
+            mred = calzetti00(np.array(waves), Av, Rv)
+            fred = 10**(-0.4*mred)
+            
+            key = 'Balmer 10kK + MgII Av={0:.1f}'.format(Av)
+            line_wavelengths[key] = [w for w in waves]
+            line_ratios[key] = [ratios[i]*fred[i] for i in range(len(waves))]
+                
+    except:
+        line_wavelengths['Balmer 10kK + MgII Av=0.5'] = [6564.61, 4862.68, 4341.68, 4101.73, 3971.198, 2799.117, 12821.6, 10941.1]
+        line_ratios['Balmer 10kK + MgII Av=0.5'] = [2.009811938798515, 0.5817566641521459, 0.25176970824566913, 0.1338409369665902, 0.08079209880749984, 1.1739297839690317, 0.13092553990513178, 0.05033866127477651]
+        
+        line_wavelengths['Balmer 10kK + MgII Av=1.0'] = [6564.61, 4862.68, 4341.68, 4101.73, 3971.198, 2799.117, 12821.6, 10941.1]
+        line_ratios['Balmer 10kK + MgII Av=1.0'] = [1.4123580522157504, 0.33844081628543266, 0.13544441450878067, 0.0691636926953466, 0.04079602018575511, 0.4593703792298591, 0.12486521707058751, 0.045436270735820045]
+        
+        line_wavelengths['Balmer 10kK + MgII Av=2.0'] = [6564.61, 4862.68, 4341.68, 4101.73, 3971.198, 2799.117, 12821.6, 10941.1]
+        line_ratios['Balmer 10kK + MgII Av=2.0'] = [0.6974668768037302, 0.11454218612794999, 0.03919912269578289, 0.018469561340758073, 0.010401970393728362, 0.0703403817712615, 0.11357315292894044, 0.03701729780130422]
     
     # Reddened with Kriek & Conroy dust, tau_V=0.5
     line_wavelengths['Balmer 10kK t0.5'] = [6564.61, 4862.68, 4341.68, 4101.73]
@@ -1138,9 +1515,20 @@ def get_line_wavelengths():
     line_ratios['OI-6302'] = [1, 0.33]
     line_wavelengths['OI-5578'] = [5578.6]
     line_ratios['OI-5578'] = [1]
-
-    line_wavelengths['NeIII-3867'] = [3867.5]
+    
+    # Auroral OII
+    # lines roughly taken from https://arxiv.org/pdf/1610.06939.pdf 
+    line_wavelengths['OII-7325'] = [7322.0, 7332.]
+    line_ratios['OII-7325'] = [1.2, 1.] 
+    
+    # Weak Ar III in SF galaxies
+    line_wavelengths['ArIII-7138'] = [7138.0]
+    line_ratios['ArIII-7138'] = [1.] 
+    
+    line_wavelengths['NeIII-3867'] = [3869.87]
     line_ratios['NeIII-3867'] = [1.]
+    line_wavelengths['NeIII-3968'] = [3968.16]
+    line_ratios['NeIII-3968'] = [1.]
     line_wavelengths['NeV-3346'] = [3346.8]
     line_ratios['NeV-3346'] = [1.]
     line_wavelengths['NeVI-3426'] = [3426.85]
@@ -1157,17 +1545,27 @@ def get_line_wavelengths():
     
     line_wavelengths['SII'] = [6718.29, 6732.67]
     line_ratios['SII'] = [1., 1.]   
+
+    line_wavelengths['SII-6717'] = [6718.29]
+    line_ratios['SII-6717'] = [1.]   
+    line_wavelengths['SII-6731'] = [6732.67]
+    line_ratios['SII-6731'] = [1.]
     
     line_wavelengths['HeII-4687'] = [4687.5]
-    line_ratios['HeII-4697'] = [1.]
+    line_ratios['HeII-4687'] = [1.]
     line_wavelengths['HeII-5412'] = [5412.5]
     line_ratios['HeII-5410'] = [1.]
     line_wavelengths['HeI-5877'] = [5877.2]
     line_ratios['HeI-5877'] = [1.]
     line_wavelengths['HeI-3889'] = [3889.5]
     line_ratios['HeI-3889'] = [1.]
-    line_wavelengths['HeI-1083'] = [10830.]
+    line_wavelengths['HeI-1083'] = [10833.2]
     line_ratios['HeI-1083'] = [1.]
+    
+    # Osterbrock Table 4.5
+    # -> N=4
+    line_wavelengths['HeI-series'] = [4472.7, 5877.2, 4027.3, 3820.7, 7067.1, 10833.2, 3889.7, 3188.7]
+    line_ratios['HeI-series'] = [1., 2.75, 0.474, 0.264, 0.330, 4.42, 2.26, 0.916]
     
     line_wavelengths['MgII'] = [2799.117]
     line_ratios['MgII'] = [1.]
@@ -1184,6 +1582,10 @@ def get_line_wavelengths():
     line_wavelengths['SiIV+OIV-1398'] = [1398.]
     line_ratios['SiIV+OIV-1398'] = [1.]
     
+    # Weak line in LEGA-C spectra
+    line_wavelengths['NI-5199'] = [5199.4, 5201.76]
+    line_ratios['NI-5199'] = [1., 1.]
+    
     line_wavelengths['NII'] = [6549.86, 6585.27]
     line_ratios['NII'] = [1., 3]
     line_wavelengths['NIII-1750'] = [1750.]
@@ -1196,14 +1598,23 @@ def get_line_wavelengths():
     line_wavelengths['Lya'] = [1215.4]
     line_ratios['Lya'] = [1.]
 
-    line_wavelengths['QSO-UV-lines'] = [line_wavelengths[k][0] for k in ['Lya','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'SiIV+OIV-1398', 'NV-1240']]
-    line_ratios['QSO-UV-lines'] = [1., 0.5, 0.1, 0.008, 0.09, 0.1, 0.3]
+    line_wavelengths['QSO-UV-lines'] = [line_wavelengths[k][0] for k in ['Lya','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'SiIV+OIV-1398', 'NV-1240','NIII-1750']]
+    line_ratios['QSO-UV-lines'] = [1., 0.5, 0.1, 0.008, 0.09, 0.1, 0.3, 0.05]
 
-    line_wavelengths['QSO-Narrow-lines'] = [line_wavelengths[k][0] for k in ['OII', 'OIII', 'SII', 'OI-6302', 'NeIII-3867', 'NeVI-3426', 'NeV-3346']]
-    line_ratios['QSO-Narrow-lines'] = [0.2, 1, 0.15, 0.01, 0.15, 0.1, 0.08]
+    line_wavelengths['QSO-Narrow-lines'] = [line_wavelengths[k][0] for k in ['OII', 'OIII-5007', 'OIII-4959', 'SII-6717', 'SII-6731', 'OI-6302', 'NeIII-3867', 'NeVI-3426', 'NeV-3346']]
+    line_ratios['QSO-Narrow-lines'] = [0.2, 1.6, 1.6/2.98, 0.1, 0.1, 0.01, 0.5, 0.2, 0.02]
+    
+    # redder lines
+    line_wavelengths['QSO-Narrow-lines'] += line_wavelengths['SIII']
+    line_ratios['QSO-Narrow-lines'] += [l*0.05 for l in line_ratios['SIII']]
+    line_wavelengths['QSO-Narrow-lines'] += line_wavelengths['HeI-1083']
+    line_ratios['QSO-Narrow-lines'] += [0.2]
     
     line_wavelengths['Lya+CIV'] = [1215.4, 1549.49]
     line_ratios['Lya+CIV'] = [1., 0.1]
+    
+    line_wavelengths['Gal-UV-lines'] = [line_wavelengths[k][0] for k in ['Lya','CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'SiIV+OIV-1398', 'NV-1240', 'NIII-1750', 'MgII']]
+    line_ratios['Gal-UV-lines'] = [1., 0.15, 0.1, 0.008, 0.09, 0.1, 0.05, 0.05, 0.1]
     
     line_wavelengths['Ha+SII'] = [6564.61, 6718.29, 6732.67]
     line_ratios['Ha+SII'] = [1., 1./10, 1./10]
@@ -1216,10 +1627,28 @@ def get_line_wavelengths():
     
     line_wavelengths['Ha+NII+SII+SIII+He+PaB'] = [6564.61, 6549.86, 6585.27, 6718.29, 6732.67, 9068.6, 9530.6, 10830., 12821]
     line_ratios['Ha+NII+SII+SIII+He+PaB'] = [1., 1./(4.*4), 3./(4*4), 1./10, 1./10, 1./20, 2.44/20, 1./25., 1./10]
+
+    line_wavelengths['Ha+NII+SII+SIII+He+PaB+PaG'] = [6564.61, 6549.86, 6585.27, 6718.29, 6732.67, 9068.6, 9530.6, 10830., 12821, 10941.1]
+    line_ratios['Ha+NII+SII+SIII+He+PaB+PaG'] = [1., 1./(4.*4), 3./(4*4), 1./10, 1./10, 1./20, 2.44/20, 1./25., 1./10, 1./10/2.86]
+
+    line_wavelengths['Ha+NII'] = [6564.61, 6549.86, 6585.27]
+    n2ha = 1./4 # log NII/Ha ~ -0.6, Kewley 2013
+    line_ratios['Ha+NII'] = [1., 1./4.*n2ha, 3/4.*n2ha]
     
     line_wavelengths['OIII+Hb'] = [5008.240, 4960.295, 4862.68]
     line_ratios['OIII+Hb'] = [2.98, 1, 3.98/6.]
-    
+
+    # Include more balmer lines
+    line_wavelengths['OIII+Hb+Hg+Hd'] = line_wavelengths['OIII'] + line_wavelengths['Balmer 10kK'][1:] 
+    line_ratios['OIII+Hb+Hg+Hd'] = line_ratios['OIII'] + line_ratios['Balmer 10kK'][1:] 
+    # o3hb = 1./6
+    # for i in range(2, len(line_ratios['Balmer 10kK'])-1):
+    #         line_ratios['OIII+Hb+Hg+Hd'][i] *= 3.98*o3hb
+    # Compute as O3/Hb
+    o3hb = 6
+    for i in range(2):
+        line_ratios['OIII+Hb+Hg+Hd'][i] *= 1./3.98*o3hb
+     
     line_wavelengths['OIII+Hb+Ha'] = [5008.240, 4960.295, 4862.68, 6564.61]
     line_ratios['OIII+Hb+Ha'] = [2.98, 1, 3.98/10., 3.98/10.*2.86]
 
@@ -1232,10 +1661,69 @@ def get_line_wavelengths():
     line_wavelengths['OII+Ne'] = [3729.875, 3869]
     line_ratios['OII+Ne'] = [1, 1./5]
     
+    # Groups of all lines
+    line_wavelengths['full'] = [w for w in line_wavelengths['Balmer 10kK']]
+    line_ratios['full'] = [w for w in line_ratios['Balmer 10kK']]
+
+    line_wavelengths['full'] += line_wavelengths['NII']
+    line_ratios['full'] += [1./5/3.*line_ratios['Balmer 10kK'][1]*r for r in line_ratios['NII']]
+        
+    line_wavelengths['full'] += line_wavelengths['SII']
+    line_ratios['full'] += [1./3.8/2*line_ratios['Balmer 10kK'][1]*r for r in line_ratios['SII']]
+
+
+    # Lines from Hegele 2006, low-Z HII galaxies
+    # SDSS J002101.03+005248.1    
+    line_wavelengths['full'] += line_wavelengths['SIII']
+    line_ratios['full'] += [401./1000/2.44*line_ratios['Balmer 10kK'][1]*r for r in line_ratios['SIII']]
+        
+    # HeI
+    line_wavelengths['full'] += line_wavelengths['HeI-series']
+    he5877_hb = 127./1000/line_ratios['HeI-series'][1]
+    line_ratios['full'] += [he5877_hb*r for r in line_ratios['HeI-series']]
+    
+    # NeIII
+    line_wavelengths['full'] += line_wavelengths['NeIII-3867']
+    line_ratios['full'] += [388./1000 for r in line_ratios['NeIII-3867']]
+    
+    line_wavelengths['full'] += line_wavelengths['NeIII-3968']
+    line_ratios['full'] += [290./1000 for r in line_ratios['NeIII-3968']]
+        
+    # Add UV lines: MgII/Hb = 3
+    line_wavelengths['full'] += line_wavelengths['Gal-UV-lines']
+    line_ratios['full'] += [r*3/line_ratios['Gal-UV-lines'][-1] for r in line_ratios['Gal-UV-lines']]
+    
+    # High O32 - low metallicity
+    o32, r23 = 4, 8
+    o3_hb = r23/(1+1/o32)
+    
+    line_wavelengths['highO32'] = [w for w in line_wavelengths['full']]
+    line_ratios['highO32'] = [r for r in line_ratios['full']]
+
+    line_wavelengths['highO32'] += line_wavelengths['OIII']
+    line_ratios['highO32'] += [r*o3_hb/3.98 for r in line_ratios['OIII']]
+
+    line_wavelengths['highO32'] += line_wavelengths['OII']
+    line_ratios['highO32'] += [r*o3_hb/2/o32 for r in line_ratios['OII']]
+
+    # Low O32 - low metallicity
+    o32, r23 = 0.3, 4
+    o3_hb = r23/(1+1/o32)
+    
+    line_wavelengths['lowO32'] = [w for w in line_wavelengths['full']]
+    line_ratios['lowO32'] = [r for r in line_ratios['full']]
+
+    line_wavelengths['lowO32'] += line_wavelengths['OIII']
+    line_ratios['lowO32'] += [r*o3_hb/3.98 for r in line_ratios['OIII']]
+
+    line_wavelengths['lowO32'] += line_wavelengths['OII']
+    line_ratios['lowO32'] += [r*o3_hb/2/o32 for r in line_ratios['OII']]
+    
+    
     return line_wavelengths, line_ratios 
     
 class SpectrumTemplate(object):
-    def __init__(self, wave=None, flux=None, central_wave=None, fwhm=None, velocity=False, fluxunits=FLAMBDA_CGS, waveunits=u.angstrom, name='', lorentz=False, err=None):
+    def __init__(self, wave=None, flux=None, central_wave=None, fwhm=None, velocity=False, fluxunits=FLAMBDA_CGS, waveunits=u.angstrom, name='template', lorentz=False, err=None):
         """Container for template spectra.   
                 
         Parameters
@@ -1322,7 +1810,7 @@ class SpectrumTemplate(object):
         
     @staticmethod 
     def make_gaussian(central_wave, fwhm, max_sigma=5, step=0.1,
-                      wave_grid=None, velocity=False, clip=1.e-5,
+                      wave_grid=None, velocity=False, clip=1.e-6,
                       lorentz=False):
         """Make Gaussian template
         
@@ -1542,8 +2030,10 @@ class SpectrumTemplate(object):
         INTEGRATOR = np.trapz
         
         try:
-            import grizli.utils_c
-            interp = grizli.utils_c.interp.interp_conserve_c
+            #import grizli.utils_c
+            #interp = grizli.utils_c.interp.interp_conserve_c
+            from .utils_c.interp import interp_conserve_c
+            interp = interp_conserve_c
         except ImportError:
             interp = np.interp
         
@@ -1612,7 +2102,7 @@ class SpectrumTemplate(object):
                 return temp_flux
 
 def load_templates(fwhm=400, line_complexes=True, stars=False,
-                   full_line_list=None, continuum_list=None,
+                   full_line_list=DEFAULT_LINE_LIST, continuum_list=None,
                    fsps_templates=False, alf_template=False, lorentz=False):
     """Generate a list of templates for fitting to the grism spectra
     
@@ -1645,14 +2135,7 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
         
     full_line_list : None or list
         Full set of lines to try.  The default is set in the global variable
-        `~grizli.utils.DEFAULT_LINE_LIST`, which is currently
-        
-            >>> full_line_list = ['PaB', 'HeI-1083', 'SIII', 'SII', 'Ha',
-                                  'OI-6302', 'OIII', 'Hb', 'OIII-4363', 'Hg',
-                                  'Hd', 'NeIII', 'OII', 'NeVI', 'NeV', 
-                                  'MgII','CIV-1549', 'CIII-1908', 'OIII-1663', 
-                                  'HeII-1640', 'NIII-1750', 'NIV-1487', 
-                                  'NV-1240', 'Lya']
+        `~grizli.utils.DEFAULT_LINE_LIST`.
         
         The full list of implemented lines is in `~grizli.utils.get_line_wavelengths`.
     
@@ -1777,7 +2260,10 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
     if line_complexes:
         #line_list = ['Ha+SII', 'OIII+Hb+Ha', 'OII']
         #line_list = ['Ha+SII', 'OIII+Hb', 'OII']
-        line_list = ['Ha+NII+SII+SIII+He+PaB', 'OIII+Hb', 'OII+Ne', 'Lya+CIV']
+        #line_list = ['Ha+NII+SII+SIII+He+PaB', 'OIII+Hb', 'OII+Ne', 'Lya+CIV']
+        #line_list = ['Ha+NII+SII+SIII+He+PaB', 'OIII+Hb+Hg+Hd', 'OII+Ne', 'Lya+CIV']
+        line_list = ['Ha+NII+SII+SIII+He+PaB', 'OIII+Hb+Hg+Hd', 'OII+Ne', 'Gal-UV-lines']
+
     else:
         if full_line_list is None:
             line_list = DEFAULT_LINE_LIST
@@ -1794,12 +2280,19 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
     #     wave_grid = None   
     
     for li in line_list:
-        scl = line_ratios[li]/np.sum(line_ratios[li])
+        scl = line_ratios[li]/np.sum(line_ratios[li])            
         for i in range(len(scl)):
+            if ('O32' in li) & (np.abs(line_wavelengths[li][i]-2799) < 2):
+                fwhm_i = 2500
+                lorentz_i = True
+            else:
+                fwhm_i = fwhm
+                lorentz_i = lorentz
+                
             line_i = SpectrumTemplate(wave=wave_grid, 
                                       central_wave=line_wavelengths[li][i], 
-                                      flux=None, fwhm=fwhm, velocity=True,
-                                      lorentz=lorentz)
+                                      flux=None, fwhm=fwhm_i, velocity=True,
+                                      lorentz=lorentz_i)
                                       
             if i == 0:
                 line_temp = line_i*scl[i]
@@ -1812,7 +2305,18 @@ def load_templates(fwhm=400, line_complexes=True, stars=False,
                                  
     return temp_list    
 
-def load_quasar_templates(broad_fwhm=2500, narrow_fwhm=1200, broad_lines=    ['HeI-5877', 'MgII', 'Lya', 'CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'SiIV+OIV-1398', 'NIV-1487', 'NV-1240'], narrow_lines=['OII', 'OIII', 'SII', 'OI-6302', 'NeIII-3867', 'NeVI-3426', 'NeV-3346'], include_feii=True, slopes=[-2.8, 0, 2.8], uv_line_complex=True, fixed_narrow_lines=False, t1_only=False, nspline=13):
+def load_beta_templates(wave=np.arange(400, 2.5e4), betas=[-2, -1, 0]):
+    """
+    Step-function templates with f_lambda ~ (wave/1216.)**beta
+    """
+    cont_wave = np.arange(400, 2.5e4)
+    t0 = {}
+    for beta in betas:
+        key = 'beta {0}'.format(beta)
+        t0[key] = SpectrumTemplate(wave=cont_wave, flux=(cont_wave/1216.)**beta)
+    return t0
+    
+def load_quasar_templates(broad_fwhm=2500, narrow_fwhm=1200, broad_lines=    ['HeI-5877', 'MgII', 'Lya', 'CIV-1549', 'CIII-1908', 'OIII-1663', 'HeII-1640', 'SiIV+OIV-1398', 'NIV-1487', 'NV-1240', 'PaB', 'PaG'], narrow_lines=['NIII-1750','OII', 'OIII', 'SII', 'OI-6302', 'OIII-4363', 'NeIII-3867', 'NeVI-3426', 'NeV-3346', 'OII-7325', 'ArIII-7138', 'SIII', 'HeI-1083'], include_feii=True, slopes=[-2.8, 0, 2.8], uv_line_complex=True, fixed_narrow_lines=False, t1_only=False, nspline=13, Rspline=30, betas=None, include_reddened_balmer_lines=False):
     """
     Make templates suitable for fitting broad-line quasars
     """
@@ -1823,9 +2327,9 @@ def load_quasar_templates(broad_fwhm=2500, narrow_fwhm=1200, broad_lines=    ['H
     t0 = OrderedDict()
     t1 = OrderedDict()
     
-    broad1 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Ha', 'Hb', 'Hg', 'Hd'] + broad_lines, continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
+    broad1 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Ha', 'Hb', 'Hg', 'Hd', 'H7', 'H8', 'H9', 'H10'] + broad_lines, continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
 
-    narrow1 = load_templates(fwhm=narrow_fwhm, line_complexes=False, stars=False, full_line_list=narrow_lines, continuum_list=[], fsps_templates=False, alf_template=False)
+    narrow1 = load_templates(fwhm=400, line_complexes=False, stars=False, full_line_list=narrow_lines, continuum_list=[], fsps_templates=False, alf_template=False)
     
     if fixed_narrow_lines:
         if t1_only:
@@ -1834,16 +2338,26 @@ def load_quasar_templates(broad_fwhm=2500, narrow_fwhm=1200, broad_lines=    ['H
             narrow0 = load_templates(fwhm=narrow_fwhm, line_complexes=False, stars=False, full_line_list=['QSO-Narrow-lines'], continuum_list=[], fsps_templates=False, alf_template=False)
         
     else:
-        narrow0 = narrow1
+        narrow0 = load_templates(fwhm=narrow_fwhm, line_complexes=False, stars=False, full_line_list=narrow_lines, continuum_list=[], fsps_templates=False, alf_template=False)
         
     if t1_only:
         broad0 = broad1
     else:
         if uv_line_complex:
-            broad0 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Balmer 10kK + MgII', 'QSO-UV-lines'], continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
+            full_line_list=['Balmer 10kK + MgII Av=0.5', 'QSO-UV-lines']
+            #broad0 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Balmer 10kK + MgII', 'QSO-UV-lines'], continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
         else:
+            full_line_list=['Balmer 10kK + MgII Av=0.5'] 
             #broad0 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Balmer 10kK'] + broad_lines, continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
-            broad0 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=['Balmer 10kK + MgII'], continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
+        
+        if include_reddened_balmer_lines:
+            line_wavelengths, line_ratios = get_line_wavelengths()
+            if 'Balmer 10kK + MgII Av=1.0' in line_wavelengths:
+                full_line_list += ['Balmer 10kK + MgII'] 
+                full_line_list += ['Balmer 10kK + MgII Av=1.0'] 
+                full_line_list += ['Balmer 10kK + MgII Av=2.0'] 
+            
+        broad0 = load_templates(fwhm=broad_fwhm, line_complexes=False, stars=False, full_line_list=full_line_list, continuum_list=[], fsps_templates=False, alf_template=False, lorentz=True)
          
         for k in broad0:
             t0[k] = broad0[k]
@@ -1864,41 +2378,122 @@ def load_quasar_templates(broad_fwhm=2500, narrow_fwhm=1200, broad_lines=    ['H
         # smoothing, in units of input velocity resolution
         feii_kern = broad_fwhm/2.3548/75.
         feii_sm = nd.gaussian_filter(feii_flux, feii_kern)
-        t0['FeII-VC2004'] = t1['FeII-VC2004'] = SpectrumTemplate(wave=feii_wave, flux=feii_sm)
+        t0['FeII-VC2004'] = t1['FeII-VC2004'] = SpectrumTemplate(wave=feii_wave, flux=feii_sm, name='FeII-VC2004')
     
     ### Linear continua
     # cont_wave = np.arange(400, 2.5e4)
     # for slope in slopes:
     #     key = 'slope {0}'.format(slope)
     #     t0[key] = t1[key] = SpectrumTemplate(wave=cont_wave, flux=(cont_wave/6563.)**slope)
-
-    ### Spline continua
-    cont_wave = np.arange(5000, 2.4e4)
-    bsplines = bspline_templates(cont_wave, df=nspline, log=True)
-    for key in bsplines:
-        t0[key] = t1[key] = bsplines[key]
     
+    if Rspline is not None:
+        wspline = np.arange(4200, 2.5e4, 10)
+        df_spl = log_zgrid(zr=[wspline[0], wspline[-1]], dz=1./Rspline)
+        bsplines = bspline_templates(wspline, df=len(df_spl)+2, log=True, 
+                                     clip=0.0001)
+        
+        for key in bsplines:
+            t0[key] = t1[key] = bsplines[key]
+        
+    elif nspline > 0:
+        ### Spline continua
+        cont_wave = np.arange(5000, 2.4e4)
+        bsplines = bspline_templates(cont_wave, df=nspline, log=True)
+        for key in bsplines:
+            t0[key] = t1[key] = bsplines[key]
+    
+    elif betas is not None:
+        btemp = load_beta_templates(wave=np.arange(400, 2.5e4), betas=betas)
+        for key in btemp:
+            t0[key] = t1[key] = btemp[key]
+        
+    else:
+        ### Observed frame steps
+        onedR = -nspline
+        wlim = [5000, 18000.0]
+        bin_steps, step_templ = step_templates(wlim=wlim, R=onedR,
+                                               round=10)  
+        for key in step_templ:
+            t0[key] = t1[key] = step_templ[key]
+        
     # t0['blue'] = t1['blue'] = SpectrumTemplate(wave=cont_wave, flux=(cont_wave/6563.)**-2.8)
     # t0['mid'] = t1['mid'] = SpectrumTemplate(wave=cont_wave, flux=(cont_wave/6563.)**0)
     # t0['red'] = t1['mid'] = SpectrumTemplate(wave=cont_wave, flux=(cont_wave/6563.)**2.8)
     
     return t0, t1
     
-def load_phoenix_stars():
+PHOENIX_LOGG_FULL = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5]
+PHOENIX_LOGG = [4.0, 4.5, 5.0, 5.5]
+
+PHOENIX_TEFF_FULL = [400.0, 420.0, 450.0, 500.0, 550.0, 600.0, 650.0, 700.0, 750.0, 800.0, 850.0, 900.0, 950.0, 1000.0, 1050.0, 1100.0, 1150.0, 1200.0, 1250.0, 1300.0, 1350.0, 1400.0, 1450.0, 1500.0, 1550.0, 1600.0, 1650.0, 1700.0, 1750.0, 1800.0, 1850.0, 1900.0, 1950.0, 2000.0, 2100.0, 2200.0, 2300.0, 2400.0, 2500.0, 2600.0, 2700.0, 2800.0, 2900.0, 3000.0, 3100.0, 3200.0, 3300.0, 3400.0, 3500.0, 3600.0, 3700.0, 3800.0, 3900.0, 4000.0, 4100.0, 4200.0, 4300.0, 4400.0, 4500.0, 4600.0, 4700.0, 4800.0, 4900.0, 5000.0]
+
+PHOENIX_TEFF = [ 400.,  420., 450., 500.,  550., 600.,  650., 700.,  750., 
+       800.,  850., 900., 950., 1000., 1050., 1100., 1150., 1200.,
+       1300., 1400., 1500., 1600., 1700., 1800., 1900., 2000., 2100.,
+       2200., 2300., 2400., 2500., 2600., 2700., 2800., 2900., 3000.,
+       3100., 3200., 3300., 3400., 3500., 3600., 3700., 3800., 3900., 4000.,
+       4200., 4400., 4600., 4800., 5000., 5500., 5500, 6000., 6500., 7000.]
+
+PHOENIX_ZMET_FULL = [-2.5, -2.0, -1.5, -1.0, -0.5, -0., 0.5]
+PHOENIX_ZMET = [-1.0, -0.5, -0.]
+       
+def load_phoenix_stars(logg_list=PHOENIX_LOGG, teff_list=PHOENIX_TEFF, zmet_list=PHOENIX_ZMET, add_carbon_star=True, file='bt-settl_t400-7000_g4.5.fits'):
     """
     Load Phoenix stellar templates
     """
     from collections import OrderedDict
+    try:
+        from urllib.request import urlretrieve
+    except:
+        from urllib import urlretrieve
+            
+    #file='bt-settl_t400-5000_g4.5.fits'
+    #file='bt-settl_t400-3500_z0.0.fits'
     
-    hdu = pyfits.open(os.path.join(GRIZLI_PATH, 'templates/stars/bt-settl_t400-3500_z0.0.fits'))
+    try:
+        hdu = pyfits.open(os.path.join(GRIZLI_PATH, 'templates/stars/', file))
+    except:
+        url = 'https://s3.amazonaws.com/grizli/CONF'
+        print('Fetch {0}/{1}'.format(url, file))
+        
+        #os.system('wget -O /tmp/{1} {0}/{1}'.format(url, file))
+        res = urlretrieve('{0}/{1}'.format(url, file), 
+                          filename=os.path.join('/tmp', file))
+        
+        hdu = pyfits.open(os.path.join('/tmp/', file))
+        
     tab = GTable.gread(hdu[1])
     
     tstars = OrderedDict()
     N = tab['flux'].shape[1]
     for i in range(N):
-        label = 'bt-settl_t{0:05.0f}_g{1:3.1f}'.format(tab.meta['TEFF{0:03d}'.format(i)], tab.meta['LOGG{0:03d}'.format(i)])
-        tstars[label] = SpectrumTemplate(wave=tab['wave'], flux=tab['flux'][:,i], name=label)
+        teff = tab.meta['TEFF{0:03d}'.format(i)]
+        logg = tab.meta['LOGG{0:03d}'.format(i)]
+        try:
+            met = tab.meta['ZMET{0:03d}'.format(i)]
+        except:
+            met = 0.
+            
+        if (logg not in logg_list) | (teff not in teff_list) | (met not in zmet_list):
+            #print('Skip {0} {1}'.format(logg, teff))
+            continue
+            
+        label = 'bt-settl_t{0:05.0f}_g{1:3.1f}_m{2:.1f}'.format(teff, logg, met)
+        
+        tstars[label] = SpectrumTemplate(wave=tab['wave'],
+                                         flux=tab['flux'][:,i], name=label)
     
+    if add_carbon_star:
+        cfile = os.path.join(GRIZLI_PATH, 'templates/stars/carbon_star.txt')
+        sp = read_catalog(cfile)
+        if add_carbon_star > 1:
+            import scipy.ndimage as nd
+            cflux = nd.gaussian_filter(sp['flux'], add_carbon_star)
+        else:
+            cflux = sp['flux']
+            
+        tstars['bt-settl_t05000_g0.0_m0.0'] = SpectrumTemplate(wave=sp['wave'], flux=cflux, name='carbon-lancon2002')
+        
     return tstars
     
         
@@ -1963,6 +2558,8 @@ def bspline_templates(wave, degree=3, df=6, get_matrix=False, log=False, clip=1.
     coefs = np.identity(n_bases)
     basis = splev(xspl, (all_knots, coefs, degree))
     
+    wave_peak = np.round(wave[np.argmax(basis, axis=1)])
+    
     maxval = np.max(basis, axis=1)
     for i in range(n_bases):
         basis[i][basis[i] < clip*maxval[i]] = 0
@@ -1972,10 +2569,11 @@ def bspline_templates(wave, degree=3, df=6, get_matrix=False, log=False, clip=1.
         
     temp = OrderedDict()  
     for i in range(n_bases):
-        key = 'bspl {0}'.format(i)
+        key = 'bspl {0} {1:.0f}'.format(i, wave_peak[i])
         temp[key] = SpectrumTemplate(wave, basis[i])
         temp[key].name = key
-    
+        temp[key].wave_peak = wave_peak[i]
+        
     temp.knots = all_knots
     temp.degree = degree
     temp.xspl = xspl
@@ -2052,22 +2650,116 @@ def split_spline_template(templ, wavelength_range=[5000,2.4e4], Rspline=10, log=
     stemp.knots = knots
     
     return stemp
-def polynomial_templates(wave, order=0, line=False):
+
+def step_templates(wlim=[5000, 1.8e4], bin_steps=None, R=30, round=10, rest=False, special=None, order=0):
+    """
+    Step-function templates for easy binning
+    """
+    if special == 'Dn4000':
+        rest = True
+        bin_steps = np.hstack([np.arange(850, 3849, 100), 
+                              [3850,3950,4000,4100], 
+                              np.arange(4200,1.7e4,100)])
+                              
+    elif special == 'D4000':
+        rest = True
+        bin_steps = np.hstack([np.arange(850, 3749, 200), 
+                              [3750,3950,4050,4250], 
+                              np.arange(4450,1.7e4,200)])
+    elif special not in ['D4000', 'Dn4000', None]:
+        print('step_templates: {0} not recognized (options are \'D4000\', \'Dn4000\', and None)'.format(special))
+        return {}
+        
+    if bin_steps is None:
+        bin_steps = np.round(log_zgrid(wlim, 1./R)/round)*round
+    else:
+        wlim = [bin_steps[0], bin_steps[-1]]
+        
+    ds = np.diff(bin_steps)
+    
+    xspec = np.arange(wlim[0]-ds[0], wlim[1]+ds[-1])
+    
+    bin_mid = bin_steps[:-1]+ds/2.
+    
+    step_templ = {}
+    for i in range(len(bin_steps)-1):
+
+        yspec = ((xspec >= bin_steps[i]) & (xspec < bin_steps[i+1]))*1        
+
+        for o in range(order+1):
+            label = 'step {0:.0f}-{1:.0f} {2}'.format(bin_steps[i], bin_steps[i+1], o)
+            if rest:
+                label = 'r'+label
+            
+            flux = ((xspec-bin_mid[i])/ds[i])**o * (yspec > 0)
+            step_templ[label] = SpectrumTemplate(wave=xspec, flux=flux,
+                                                 name=label)
+                    
+    return bin_steps, step_templ
+    
+def polynomial_templates(wave, ref_wave=1.e4, order=0, line=False):
     temp = OrderedDict()  
     if line:
         for sign in [1,-1]:
             key = 'poly {0}'.format(sign)
-            temp[key] = SpectrumTemplate(wave, sign*(wave/1.e4-1)+1)
+            temp[key] = SpectrumTemplate(wave, sign*(wave/ref_wave-1)+1)
             temp[key].name = key
             
         return temp
         
     for i in range(order+1):
         key = 'poly {0}'.format(i)
-        temp[key] = SpectrumTemplate(wave, (wave/1.e4-1)**i)
+        temp[key] = SpectrumTemplate(wave, (wave/ref_wave-1)**i)
         temp[key].name = key
-    
+        temp[key].ref_wave = ref_wave
+        
     return temp
+
+def split_poly_template(templ, ref_wave=1.e4, order=3):
+    """
+    Multiply a single template by polynomial bases to effectively generate a    
+    polynomial multiplicative correction that can be fit with linear least 
+    squares.
+    
+    Parameters
+    ==========
+    templ : `~grizli.utils.SpectrumTemplate`
+        Template to split.
+        
+    ref_wave : float
+       Wavelength where to normalize the polynomials.
+    
+    Order : int
+        Polynomial order.  Returns order+1 templates.
+            
+    Returns
+    =======
+    ptemp : dict
+    
+        Dictionary of polynomial-component templates, with additional
+        attributes:
+        
+            ref_wave = wavelength where polynomials normalized
+        
+    """
+    from collections import OrderedDict
+    from grizli import utils
+    
+    tspline = polynomial_templates(templ.wave, ref_wave=ref_wave, 
+                                   order=order, line=False)
+    
+    ptemp = OrderedDict()
+    
+    for i, t in enumerate(tspline):
+        name='{0} poly {1}'.format(templ.name, i)
+        ptemp[name] = utils.SpectrumTemplate(wave=templ.wave,
+                                 flux=templ.flux*tspline[t].flux, 
+                                 name=name)
+        ptemp[name].ref_wave = ref_wave
+    
+    ptemp.ref_wave = ref_wave
+
+    return ptemp
         
 def dot_templates(coeffs, templates, z=0, max_R=5000, apply_igm=True):
     """Compute template sum analogous to `np.dot(coeffs, templates)`.
@@ -2087,24 +2779,35 @@ def dot_templates(coeffs, templates, z=0, max_R=5000, apply_igm=True):
     #             tc += templates[te].zscale(z, scalar=coeffs[i])
     #            
     #         tl += templates[te].zscale(z, scalar=coeffs[i])
-    wave, flux_arr, is_line = array_templates(templates, max_R=max_R, z=z)
+    wave, flux_arr, is_line = array_templates(templates, max_R=max_R, z=z, 
+                                              apply_igm=apply_igm)
     
-    # IGM
-    if apply_igm:
-        try:
-            import eazy.igm
-            IGM = eazy.igm.Inoue14()
-        
-            lylim = wave < 1250
-            igmz = np.ones_like(wave)
-            igmz[lylim] = IGM.full_IGM(z, wave[lylim]*(1+z))    
-        except:
-            igmz = 1.
-    else:
-        igmz = 1.
-        
-    flux_arr *= igmz
-    
+    # # IGM
+    # if apply_igm:
+    #     try:
+    #         import eazy.igm
+    #         IGM = eazy.igm.Inoue14()
+    #     
+    #         lylim = wave < 1250
+    #         igmz = np.ones_like(wave)
+    #         igmz[lylim] = IGM.full_IGM(z, wave[lylim]*(1+z))    
+    #     except:
+    #         igmz = 1.
+    # else:
+    #     igmz = 1.
+    # 
+    # is_obsframe = np.array([t.split()[0] in ['bspl', 'step'] for t in templates])
+    #     
+    # flux_arr[~is_obsframe,:] *= igmz
+    # 
+    # # Multiply spline?
+    # for i, t in enumerate(templates):
+    #     if 'spline' in t:
+    #         for j, tj in enumerate(templates):
+    #             if is_obsframe[j]:
+    #                 print('scale spline: {0} x {1}'.format(tj, t))
+    #                 flux_arr[j,:] *= flux_arr[i,:]
+                    
     # Continuum
     cont = np.dot(coeffs*(~is_line), flux_arr)
     tc = SpectrumTemplate(wave=wave, flux=cont).zscale(z, apply_igm=False)
@@ -2115,7 +2818,7 @@ def dot_templates(coeffs, templates, z=0, max_R=5000, apply_igm=True):
     
     return tc, tl
     
-def array_templates(templates, wave=None, max_R=5000, z=0):
+def array_templates(templates, wave=None, max_R=5000, z=0, apply_igm=False):
     """Return an array version of the templates that have all been interpolated to the same grid.
     
     
@@ -2148,7 +2851,14 @@ def array_templates(templates, wave=None, max_R=5000, z=0):
     from grizli.utils_c.interp import interp_conserve_c
     
     if wave is None:
-        wave = np.unique(np.hstack([templates[t].wave/(1+z*t.startswith('bspl')) for t in templates]))
+        wstack = []
+        for t in templates:
+            if t.split()[0] in ['bspl', 'step', 'poly']:
+                wstack.append(templates[t].wave/(1+z))
+            else:
+                wstack.append(templates[t].wave)
+                
+        wave = np.unique(np.hstack(wstack))
     
     clipsum, iter = 1, 0
     while (clipsum > 0) & (iter < 10):
@@ -2164,7 +2874,7 @@ def array_templates(templates, wave=None, max_R=5000, z=0):
     flux_arr = np.zeros((NTEMP, len(wave)))
     
     for i, t in enumerate(templates):
-        if templates[t].name.startswith('bspl'):
+        if t.split()[0] in ['bspl', 'step', 'poly']:
             flux_arr[i,:] = interp_conserve_c(wave, templates[t].wave/(1+z),
                                           templates[t].flux*(1+z))
         else:
@@ -2172,6 +2882,35 @@ def array_templates(templates, wave=None, max_R=5000, z=0):
                                           templates[t].flux)
             
     is_line = np.array([t.startswith('line ') for t in templates])
+    
+    # IGM
+    if apply_igm:
+        try:
+            import eazy.igm
+            IGM = eazy.igm.Inoue14()
+        
+            lylim = wave < 1250
+            igmz = np.ones_like(wave)
+            igmz[lylim] = IGM.full_IGM(z, wave[lylim]*(1+z))    
+        except:
+            igmz = 1.
+    else:
+        igmz = 1.
+    
+    obsnames = ['bspl', 'step', 'poly']
+    is_obsframe = np.array([t.split()[0] in obsnames for t in templates])
+        
+    flux_arr[~is_obsframe,:] *= igmz
+    
+    # Multiply spline?
+    for i, t in enumerate(templates):
+        if 'spline' in t:
+            for j, tj in enumerate(templates):
+                if is_obsframe[j]:
+                    ma = flux_arr[j,:].sum()
+                    ma = ma if ma > 0 else 1
+                    
+                    flux_arr[j,:] *= flux_arr[i,:]/ma
     
     return wave, flux_arr, is_line
     
@@ -2613,7 +3352,7 @@ def get_wcs_pscale(wcs):
     
     Parameters
     ----------
-    wcs : `~astropy.wcs.WCS`
+    wcs : `~astropy.wcs.WCS` or `~astropy.io.fits.Header`
         
     Returns
     -------
@@ -2622,6 +3361,10 @@ def get_wcs_pscale(wcs):
         
     """
     from numpy import linalg
+    
+    if isinstance(wcs, pyfits.Header):
+        wcs = pywcs.WCS(wcs, relax=True)
+        
     try:
         det = linalg.det(wcs.wcs.cd)
     except:
@@ -2673,7 +3416,11 @@ def transform_wcs(in_wcs, translation=[0.,0.], rotation=0., scale=1.):
         
     out_wcs.pscale = get_wcs_pscale(out_wcs)
     #out_wcs.wcs.crpix *= scale
-    if hasattr(out_wcs, '_naxis1'):
+    if hasattr(out_wcs, 'pixel_shape'):
+        _naxis1 = int(np.round(out_wcs.pixel_shape[0]*scale))
+        _naxis2 = int(np.round(out_wcs.pixel_shape[1]*scale))
+        out_wcs.pixel_shape = [_naxis1, _naxis2]
+    elif hasattr(out_wcs, '_naxis1'):
         out_wcs._naxis1 = int(np.round(out_wcs._naxis1*scale))
         out_wcs._naxis2 = int(np.round(out_wcs._naxis2*scale))
         
@@ -2692,6 +3439,86 @@ def get_wcs_slice_header(wcs, slx, sly):
             h.rename_keyword(k, k.replace('PC', 'CD'))
     
     return h
+
+class WCSFootprint(object):
+    """
+    Helper functions for dealing with WCS footprints
+    """
+    def __init__(self, wcs, ext=1, label=None):
+        if isinstance(wcs, pywcs.WCS):
+            self.wcs = wcs.deepcopy()
+            if not hasattr(self.wcs, 'pixel_shape'):
+                self.wcs.pixel_shape = None
+            
+            if self.wcs.pixel_shape is None:
+                self.wcs.pixel_shape = [int(p*2) for p in self.wcs.wcs.crpix]     
+        elif isinstance(wcs, str):
+            hdu = pyfits.open(wcs)
+            if len(hdu) == 1:
+                ext = 0
+                            
+            self.add_naxis(hdu[ext].header)
+            the_wcs = pywcs.WCS(hdu[ext].header, fobj=hdu)
+            self.wcs = the_wcs
+        elif isinstance(wcs, pyfits.HDUList):
+            if len(wcs) == 1:
+                ext = 0
+            self.add_naxis(wcs[ext].header)
+            the_wcs = pywcs.WCS(wcs[ext].header, fobj=wcs)
+            self.wcs = the_wcs
+        else:
+            print('WCS class not recognized: {0}'.format(wcs.__class__))
+            raise ValueError
+
+        self.fp = self.wcs.calc_footprint()
+        self.cosdec = np.cos(self.fp[0,1]/180*np.pi)
+        self.label = label
+        self.pixel_scale = get_wcs_pscale(self.wcs)
+    
+    @property
+    def centroid(self):
+        return np.mean(self.fp, axis=0)
+             
+    @property 
+    def path(self):
+        """
+        `~matplotlib.path.Path` object
+        """
+        import matplotlib.path
+        return matplotlib.path.Path(self.fp)
+    
+    @property 
+    def polygon(self):
+        """
+        `~shapely.geometry.Polygon` object.
+        """
+        from shapely.geometry import Polygon
+        return Polygon(self.fp)
+    
+    def get_patch(self, **kwargs):
+        """
+        `~descartes.PolygonPatch` object
+        """
+        from descartes import PolygonPatch
+        return PolygonPatch(self.polygon, **kwargs)
+    
+    @property
+    def region(self):
+        """
+        Polygon string in DS9 region format
+        """
+        return 'polygon({0})'.format(','.join(['{0:.6f}'.format(c) for c in self.fp.flatten()]))
+        
+    @staticmethod
+    def add_naxis(header):
+        """
+        If NAXIS keywords not found in an image header, assume the parent 
+        image dimensions are 2*CRPIX
+        """
+        for i in [1,2]:
+            if 'NAXIS{0}'.format(i) not in header:
+                header['NAXIS{0}'.format(i)] = int(header['CRPIX{0}'.format(i)]*2)
+                
     
 def reproject_faster(input_hdu, output, pad=10, **kwargs):
     """Speed up `reproject` module with array slices of the input image
@@ -3010,7 +3837,7 @@ def strip_header_keys(header, comment=True, history=True, drizzle_keys=DRIZZLE_K
     return h
     
             
-def to_header(wcs, relax=True):
+def to_header(wcs, add_naxis=True, relax=True, key=None):
     """Modify `astropy.wcs.WCS.to_header` to produce more keywords
     
     Parameters
@@ -3018,8 +3845,14 @@ def to_header(wcs, relax=True):
     wcs : `~astropy.wcs.WCS`
         Input WCS.
     
+    add_naxis : bool
+        Add NAXIS keywords from WCS dimensions
+        
     relax : bool
         Passed to `WCS.to_header(relax=)`.
+    
+    key : str
+        See `~astropy.wcs.WCS.to_header`.
         
     Returns
     -------
@@ -3027,11 +3860,18 @@ def to_header(wcs, relax=True):
         Output header.
         
     """
-    header = wcs.to_header(relax=relax)
-    if hasattr(wcs, '_naxis1'):
-        header['NAXIS'] = wcs.naxis
-        header['NAXIS1'] = wcs._naxis1
-        header['NAXIS2'] = wcs._naxis2
+    header = wcs.to_header(relax=relax, key=key)
+    if add_naxis:
+        if hasattr(wcs, 'pixel_shape'):
+            header['NAXIS'] = wcs.naxis
+            if wcs.pixel_shape is not None:
+                header['NAXIS1'] = wcs.pixel_shape[0]
+                header['NAXIS2'] = wcs.pixel_shape[1] 
+        
+        elif hasattr(wcs, '_naxis1'):
+            header['NAXIS'] = wcs.naxis
+            header['NAXIS1'] = wcs._naxis1
+            header['NAXIS2'] = wcs._naxis2
     
     for k in header:
         if k.startswith('PC'):
@@ -3201,14 +4041,14 @@ def get_flt_footprint(flt_file, extensions=[1,2,3,4], patch_args=None):
     else:
         return fp
             
-def make_maximal_wcs(files, pixel_scale=0.1, get_hdu=True, pad=90, verbose=True):
+def make_maximal_wcs(files, pixel_scale=0.1, get_hdu=True, pad=90, verbose=True, theta=0):
     """
-    Compute a North-up HDU with a footprint that contains all of `files`
+    Compute an ImageHDU with a footprint that contains all of `files`
     
     Parameters
     ----------
     files : list
-        List of HST FITS files (e.g., FLT.)
+        List of HST FITS files (e.g., FLT.) or WCS objects.
     
     pixel_scale : float
         Pixel scale of output WCS, in `~astropy.units.arcsec`.
@@ -3237,52 +4077,69 @@ def make_maximal_wcs(files, pixel_scale=0.1, get_hdu=True, pad=90, verbose=True)
     import astropy.io.fits as pyfits
     import astropy.wcs as pywcs
     
-    group_poly = None
-    
-    for i, file in enumerate(files):
-        if not os.path.exists(file):
-            continue
-        
-        im = pyfits.open(file)
-        
-        if im[0].header['INSTRUME'] == 'ACS':
-            chips = 2
-        elif im[0].header['INSTRUME'] == 'WFPC2':
-            chips = 4
-        else:
-            chips = 1
-        
-        for chip in range(chips):
-            if ('SCI',chip+1) not in im:
+    if isinstance(files[0], pywcs.WCS):
+        # Already wcs_list
+        wcs_list = [(wcs, 'WCS', -1) for wcs in files]
+    else:
+        wcs_list = []
+        for i, file in enumerate(files):
+            if not os.path.exists(file):
                 continue
-                
-            wcs = pywcs.WCS(im['SCI',chip+1].header, fobj=im)
-            p_i = Polygon(wcs.calc_footprint())
-            if group_poly is None:
-                group_poly = p_i
+        
+            im = pyfits.open(file)
+        
+            if im[0].header['INSTRUME'] == 'ACS':
+                chips = 2
+            elif im[0].header['INSTRUME'] == 'WFPC2':
+                chips = 4
             else:
-                group_poly = group_poly.union(p_i)
+                chips = 1
+        
+            for chip in range(chips):
+                if ('SCI',chip+1) not in im:
+                    continue
                 
-            x0, y0 = np.cast[float](group_poly.centroid.xy)[:,0]
-            if verbose:
-                print('{0:>3d}/{1:>3d}: {2}[SCI,{3}]  {4:>6.2f}'.format(i, len(files), file, chip+1, group_poly.area*3600*np.cos(y0/180*np.pi)))
+                wcs = pywcs.WCS(im['SCI',chip+1].header, fobj=im)
+                wcs_list.append((wcs, file, chip))
+        
+    group_poly = None
+    for i, (wcs, file, chip) in enumerate(wcs_list):
+        p_i = Polygon(wcs.calc_footprint())
+        if group_poly is None:
+            group_poly = p_i
+        else:
+            group_poly = group_poly.union(p_i)
+            
+        x0, y0 = np.cast[float](group_poly.centroid.xy)[:,0]
+        if verbose:
+            print('{0:>3d}/{1:>3d}: {2}[SCI,{3}]  {4:>6.2f}'.format(i, len(files), file, chip+1, group_poly.area*3600*np.cos(y0/180*np.pi)))
     
-    px, py = np.cast[float](group_poly.convex_hull.boundary.xy   )  
+    px = np.cast[float](group_poly.convex_hull.boundary.xy).T
     #x0, y0 = np.cast[float](group_poly.centroid.xy)[:,0]
-
-    x0 = (px.max()+px.min())/2.
-    y0 = (py.max()+py.min())/2.
     
-    sx = (px.max()-px.min())*np.cos(y0/180*np.pi)*3600 # arcsec
-    sy = (py.max()-py.min())*3600 # arcsec
+    x0 = (px.max(axis=0)+px.min(axis=0))/2.
+    
+    cosd = np.array([np.cos(x0[1]/180*np.pi),1])
+    
+    _mat = np.array([[np.cos(theta), -np.sin(theta)],
+                     [np.sin(theta), np.cos(theta)]])
+    
+    # Rotated
+    pr = ((px-x0)*cosd).dot(_mat)/cosd+x0
+    
+    size_arcsec = (pr.max(axis=0)-pr.min(axis=0))*cosd*3600
+    sx, sy = size_arcsec
+    
+    #sx = (px.max()-px.min())*cosd*3600 # arcsec
+    #sy = (py.max()-py.min())*3600 # arcsec
     
     size = np.maximum(sx+pad, sy+pad)
-
-    out = make_wcsheader(ra=x0, dec=y0, size=(sx+pad*2, sy+pad*2), pixscale=pixel_scale, get_hdu=get_hdu, theta=0)
     
     if verbose:
-        print('\n  Mosaic WCS: ({0:.5f},{1:.5f})  {2:.1f}\'x{3:.1f}\'  {4:.3f}"/pix\n'.format(x0, y0, (sx+pad)/60., (sy+pad)/60., pixel_scale))
-        
+        print('\n  Mosaic WCS: ({0:.5f},{1:.5f})  {2:.1f}\'x{3:.1f}\'  {4:.3f}"/pix\n'.format(x0[0], x0[1], (sx+pad)/60., (sy+pad)/60., pixel_scale))
+    
+    out = make_wcsheader(ra=x0[0], dec=x0[1], size=(sx+pad*2, sy+pad*2), pixscale=pixel_scale, get_hdu=get_hdu, theta=theta/np.pi*180)
+            
     return out
     
 def header_keys_from_filelist(fits_files, keywords=[], ext=0, colname_case=str.lower):
@@ -3341,9 +4198,187 @@ def header_keys_from_filelist(fits_files, keywords=[], ext=0, colname_case=str.l
     # Output table
     tab = Table(data=np.array(lines), names=table_header)
     
-    return tab        
+    return tab     
+    
+def drizzle_from_visit(visit, output, pixfrac=1., kernel='point', 
+                       clean=True, include_saturated=True, keep_bits=None):
+    """
+    Make drizzle mosaic from exposures in a visit dictionary
+    
+    """
+    from shapely.geometry import Polygon
+    import boto3
+    
+    bucket_name = None
+    s3 = boto3.resource('s3')
+    s3_client = boto3.client('s3')
+    
+    if isinstance(output, pywcs.WCS):
+        outputwcs = output
+    elif isinstance(output, pyfits.Header):
+        outputwcs = pywcs.WCS(output)
+    elif isinstance(output, pyfits.PrimaryHDU) | isinstance(output, pyfits.ImageHDU):
+        outputwcs = pywcs.WCS(output.header)
+    else:
+        return None 
+    
+    outputwcs.pscale = get_wcs_pscale(outputwcs)
+    
+    output_poly = Polygon(outputwcs.calc_footprint())
+    count = 0
+    
+    ref_photflam = None
+    
+    indices = []
+    
+    for i in range(len(visit['files'])):
+        olap = visit['footprints'][i].intersection(output_poly)
+        if olap.area > 0:
+            indices.append(i)
+    
+    NTOTAL = len(indices)
+    
+    for i in indices:
+        
+        file = visit['files'][i]
+        print('\n({0:4d}/{1:4d}) Add exposure {2}\n'.format(count+1, NTOTAL, file))
+        
+        if not os.path.exists(file):
+            bucket_i = visit['awspath'][i].split('/')[0]
+            if bucket_name != bucket_i:
+                bucket_name = bucket_i
+                bkt = s3.Bucket(bucket_name)
+                
+            s3_path = '/'.join(visit['awspath'][i].split('/')[1:])
+            remote_file = os.path.join(s3_path, file)
+            
+            print('  (fetch from s3://{0}/{1})'.format(bucket_i, remote_file))
+                                      
+            bkt.download_file(remote_file, file,
+                              ExtraArgs={"RequestPayer": "requester"})
+        
+        flt = pyfits.open(file)
+        sci_list, wht_list, wcs_list = [], [], []
+        
+        if flt[0].header['DETECTOR'] == 'IR':
+            bits = 576
+        else:
+            bits = 64+32
+        
+        if include_saturated:
+            bits |= 256
+        
+        if keep_bits is not None:
+            bits |= keep_bits
+                
+        keys = OrderedDict()
+        for k in ['EXPTIME','FILTER', 'FILTER1', 'FILTER2', 'DETECTOR', 'INSTRUME', 'PHOTFLAM','PHOTPLAM','PHOTFNU', 'PHOTZPT', 'PHOTBW', 'PHOTMODE', 'EXPSTART','EXPEND','DATE-OBS','TIME-OBS']:
+            if k in flt[0].header:
+                keys[k] = flt[0].header[k]
+        
+        if 'PHOTFLAM' in keys:
+            print('  0    PHOTFLAM={0:.2e}, scale={1:.1f}'.format(keys['PHOTFLAM'], 1.))
+            if ref_photflam is None:
+                ref_photflam = keys['PHOTFLAM']
+                
+        for ext in [1,2,3,4]:
+            if ('SCI',ext) in flt:
+                
+                h = flt[('SCI',ext)].header
+                if 'MDRIZSKY' in h:
+                    sky = h['MDRIZSKY']
+                else:
+                    sky = 0
+                
+                print('  ext (SCI,{0}), sky={1:.3f}'.format(ext, sky))    
+
+                if h['BUNIT'] == 'ELECTRONS':
+                    to_per_sec = 1./keys['EXPTIME']
+                else:
+                    to_per_sec = 1.
+                
+                phot_scale = to_per_sec
+                
+                if 'PHOTFLAM' in h:
+                    if ref_photflam is None:
+                        ref_photflam = h['PHOTFLAM']
+                    
+                    phot_scale = h['PHOTFLAM']/ref_photflam
+                    
+                    print('       PHOTFLAM={0:.2e}, scale={1:.1f}'.format(h['PHOTFLAM'], phot_scale))
+                    keys['PHOTFLAM'] = h['PHOTFLAM']
+                    for k in ['PHOTFLAM','PHOTPLAM','PHOTFNU', 'PHOTZPT', 'PHOTBW', 'PHOTMODE']:
+                        if k in h:
+                            keys[k] = h[k]
+                    
+                    phot_scale *= to_per_sec
+                    
+                sci_list.append((flt[('SCI',ext)].data - sky)*phot_scale)
+                
+                err = flt[('ERR',ext)].data*phot_scale
+                dq = unset_dq_bits(flt[('DQ',ext)].data, bits)
+                wht = 1/err**2
+                wht[(err == 0) | (dq > 0)] = 0
+                
+                wht_list.append(wht)
+                
+                wcs_i = pywcs.WCS(header=flt[('SCI',ext)].header, fobj=flt)
+                wcs_i.pscale = get_wcs_pscale(wcs_i)
+                
+                # wcs_i = HSTWCS(fobj=flt, ext=('SCI',ext), minerr=0.0, 
+                #                wcskey=' ')
+                if not hasattr(wcs_i, 'pixel_shape'):
+                    wcs_i.pixel_shape = wcs_i._naxis1, wcs_i._naxis2
+                    
+                wcs_list.append(wcs_i)
+                
+        if count == 0:
+            res = drizzle_array_groups(sci_list, wht_list, wcs_list,
+                                     outputwcs=outputwcs,
+                                     scale=0.1, kernel=kernel, 
+                                     pixfrac=pixfrac, calc_wcsmap=False, 
+                                     verbose=True, data=None)
+           
+            outsci, outwht, outctx, header, xoutwcs = res
+            header['EXPTIME'] = flt[0].header['EXPTIME']
+            header['NDRIZIM'] = 1
+            header['PIXFRAC'] = pixfrac
+            header['KERNEL'] = kernel
+            header['OKBITS'] = (bits, "FLT bits treated as valid")
+            
+            for k in keys:
+                header[k] = keys[k]
+                
+        else:
+            data = outsci, outwht, outctx
+            res = drizzle_array_groups(sci_list, wht_list, wcs_list,
+                                     outputwcs=outputwcs,
+                                     scale=0.1, kernel=kernel, 
+                                     pixfrac=pixfrac, calc_wcsmap=False, 
+                                     verbose=True, data=data)
+            
+            outsci, outwht, outctx = res[:3]
+            header['EXPTIME'] += flt[0].header['EXPTIME']
+            header['NDRIZIM'] += 1
+            
+        count += 1
+        header['FLT{0:05d}'.format(count)] = file
+        
+        #xfiles = glob.glob('*')
+        #print('Clean: ', clean, xfiles)
+        
+        if clean:
+            os.remove(file)
+    
+    if count == 0:
+        return None
+        
+    outwht  *= (wcs_i.pscale/outputwcs.pscale)**4
+    return outsci, outwht, header  
+    
 def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
-                         scale=0.1, kernel='point', pixfrac=1., verbose=True):
+                         scale=0.1, kernel='point', pixfrac=1., 
+                         calc_wcsmap=False, verbose=True, data=None):
     """Drizzle array data with associated wcs
     
     Parameters
@@ -3371,7 +4406,9 @@ def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
         Drizzled image header and WCS.
     
     """
-    from drizzlepac.astrodrizzle import adrizzle
+    from drizzlepac import adrizzle
+    from drizzlepac import cdriz
+    
     from stsci.tools import logutil
     log = logutil.create_logger(__name__)
     
@@ -3380,29 +4417,113 @@ def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
         header, outputwcs = compute_output_wcs(wcs_list, pixel_scale=scale)
     else:
         header = to_header(outputwcs)
+    
+    # Try to fix deprecated WCS
+    for wcs_i in wcs_list:
+        if not hasattr(wcs_i, 'pixel_shape'):
+            wcs_i.pixel_shape = wcs_i._naxis1, wcs_i._naxis2
         
+    # Output WCS requires full WCS map?
+    if calc_wcsmap < 2:
+        ctype = outputwcs.wcs.ctype
+        if '-SIP' in ctype[0]:
+            print('Output WCS ({0}) requires `calc_wcsmap=2`'.format(ctype))
+            calc_wcsmap=2
+        else:
+            # Internal WCSMAP not required
+            calc_wcsmap=0
+            
     shape = (header['NAXIS2'], header['NAXIS1'])
     
     # Output arrays
-    outsci = np.zeros(shape, dtype=np.float32)
-    outwht = np.zeros(shape, dtype=np.float32)
-    outctx = np.zeros(shape, dtype=np.int32)
+    if data is not None:
+        outsci, outwht, outctx = data
+    else:
+        outsci = np.zeros(shape, dtype=np.float32)
+        outwht = np.zeros(shape, dtype=np.float32)
+        outctx = np.zeros(shape, dtype=np.int32)
     
     # Do drizzle
     N = len(sci_list)
     for i in range(N):
         if verbose:
             log.info('Drizzle array {0}/{1}'.format(i+1, N))
+        
+        if calc_wcsmap > 1:
+            wcsmap =  WCSMapAll#(wcs_list[i], outputwcs)
+            #wcsmap = cdriz.DefaultWCSMapping
+        else:
+            wcsmap = None
             
         adrizzle.do_driz(sci_list[i].astype(np.float32, copy=False), 
                          wcs_list[i], 
                          wht_list[i].astype(np.float32, copy=False),
                          outputwcs, outsci, outwht, outctx, 1., 'cps', 1,
                          wcslin_pscale=wcs_list[i].pscale, uniqid=1, 
-                         pixfrac=pixfrac, kernel=kernel, fillval=0)
+                         pixfrac=pixfrac, kernel=kernel, fillval='0', 
+                         wcsmap=wcsmap)
         
     return outsci, outwht, outctx, header, outputwcs
-    
+
+class WCSMapAll:
+    """ Sample class to demonstrate how to define a coordinate transformation
+    """
+    def __init__(self,input,output,origin=0):
+        # Verify that we have valid WCS input objects
+        import copy
+        self.checkWCS(input,'Input')
+        self.checkWCS(output,'Output')
+
+        self.input = input
+        self.output = copy.deepcopy(output)
+        #self.output = output
+
+        self.origin = origin
+        self.shift = None
+        self.rot = None
+        self.scale = None
+
+    def checkWCS(self,obj,name):
+        try:
+            assert isinstance(obj, pywcs.WCS)
+        except AssertionError:
+            print(name +' object needs to be an instance or subclass of a PyWCS object.')
+            raise
+
+    def forward(self,pixx,pixy):
+        """ Transform the input pixx,pixy positions in the input frame
+            to pixel positions in the output frame.
+
+            This method gets passed to the drizzle algorithm.
+        """
+        # This matches WTRAXY results to better than 1e-4 pixels.
+        skyx,skyy = self.input.all_pix2world(pixx,pixy,self.origin)
+        result= self.output.all_world2pix(skyx,skyy,self.origin)
+        return result
+
+    def backward(self,pixx,pixy):
+        """ Transform pixx,pixy positions from the output frame back onto their
+            original positions in the input frame.
+        """
+        skyx,skyy = self.output.all_pix2world(pixx,pixy,self.origin)
+        result = self.input.all_world2pix(skyx,skyy,self.origin)
+        return result
+
+    def get_pix_ratio(self):
+        """ Return the ratio of plate scales between the input and output WCS.
+            This is used to properly distribute the flux in each pixel in 'tdriz'.
+        """
+        return self.output.pscale / self.input.pscale
+
+    def xy2rd(self,wcs,pixx,pixy):
+        """ Transform input pixel positions into sky positions in the WCS provided.
+        """
+        return wcs.all_pix2world(pixx,pixy,1)
+    def rd2xy(self,wcs,ra,dec):
+        """ Transform input sky positions into pixel positions in the WCS provided.
+        """
+        return wcs.all_world2pix(ra,dec,1)    
+        
 def compute_output_wcs(wcs_list, pixel_scale=0.1, max_size=10000):
     """
     Compute output WCS that contains the full list of input WCS
@@ -3467,6 +4588,8 @@ def symlink_templates(force=False):
     out_path = os.path.join(GRIZLI_PATH, 'templates')
     
     files = glob.glob(os.path.join(module_path, 'data/templates/*'))
+    files.sort()
+    
     #print(files)
     for file in files:
         filename = os.path.basename(file)
@@ -3481,7 +4604,7 @@ def symlink_templates(force=False):
         else:
             print('File exists: {0}'.format(out_file))
 
-def fetch_acs_wcs_files(beams_file):
+def fetch_acs_wcs_files(beams_file, bucket_name='aws-grivam'):
     """
     Fetch wcs files for a given beams.fits files
     """   
@@ -3500,6 +4623,9 @@ def fetch_acs_wcs_files(beams_file):
         if 'EXTNAME' not in h:
             continue
         
+        if 'FILTER' not in h:
+            continue
+        
         if (h['EXTNAME'] != 'SCI') | (h['FILTER'] not in ['G800L']):
             continue
         
@@ -3509,17 +4635,20 @@ def fetch_acs_wcs_files(beams_file):
         
         # Download the file with S3 or HTTP
         if not os.path.exists(wcsfile):
+            print('Fetch {0} from {1}/Pipeline/{2}'.format(wcsfile,
+                                                           bucket_name, root))
+            
             if HAS_BOTO:
                 s3 = boto3.resource('s3')
                 s3_client = boto3.client('s3')
-                bkt = s3.Bucket('aws-grivam')
+                bkt = s3.Bucket(bucket_name)
                 
                 s3_path = 'Pipeline/{0}/Extractions/{1}'.format(root, wcsfile)
                 bkt.download_file(s3_path, './{0}'.format(wcsfile),
                                   ExtraArgs={"RequestPayer": "requester"})
                 
             else:
-                url = 'https://s3.amazonaws.com/aws-grivam/'
+                url = 'https://s3.amazonaws.com/{0}/'.format(bucket_name)
                 url += 'Pipeline/{0}/Extractions/{1}'.format(root, wcsfile)
                 
                 print('Fetch WCS file: {0}'.format(url))
@@ -3539,7 +4668,9 @@ def fetch_hst_calib(file='iref$uc72113oi_pfl.fits',  ftpdir='https://hst-crds.st
     else:
         if verbose:
             print('{0} exists'.format(iref_file))
-        
+    
+    return iref_file
+    
 def fetch_hst_calibs(flt_file, ftpdir='https://hst-crds.stsci.edu/unchecked_get/references/hst/', calib_types=['BPIXTAB', 'CCDTAB', 'OSCNTAB', 'CRREJTAB', 'DARKFILE', 'NLINFILE', 'PFLTFILE', 'IMPHTTAB', 'IDCTAB', 'NPOLFILE'], verbose=True):
     """
     TBD
@@ -3562,6 +4693,8 @@ def fetch_hst_calibs(flt_file, ftpdir='https://hst-crds.stsci.edu/unchecked_get/
         print('No ${0} set!  Put it in ~/.bashrc or ~/.cshrc.'.format(ref_dir))
         return False
     
+    calib_paths = []
+    
     for ctype in calib_types:
         if ctype not in im[0].header:
             continue
@@ -3572,9 +4705,11 @@ def fetch_hst_calibs(flt_file, ftpdir='https://hst-crds.stsci.edu/unchecked_get/
         if im[0].header[ctype] == 'N/A':
             continue
         
-        fetch_hst_calib(im[0].header[ctype], ftpdir=ftpdir, verbose=verbose)
-            
-    return True
+        path = fetch_hst_calib(im[0].header[ctype], ftpdir=ftpdir, 
+                               verbose=verbose)
+        calib_paths.append(path)
+        
+    return calib_paths
     
 def fetch_default_calibs(ACS=False):
     
@@ -3601,7 +4736,7 @@ For example,
     if ACS:
         files.extend(['jref$n6u12592j_pfl.fits',#F814 Flat
                       'jref$o841350mj_pfl.fits', #G800L flat])
-                      ])
+                      'jref$v971826jj_npl.fits'])
     
     for file in files:
         fetch_hst_calib(file)
@@ -3617,47 +4752,78 @@ For example,
     if not os.path.exists(pam):
         os.system('curl -o {0} http://www.stsci.edu/hst/wfc3/pam/ir_wfc3_map.fits'.format(pam))
 
-def fetch_wfpc2_calib(file='g6q1912hu_r4f.fits', path=os.getenv('uref')):
-
+def fetch_wfpc2_calib(file='g6q1912hu_r4f.fits', path=os.getenv('uref'), use_mast=False, verbose=True, overwrite=True, skip_existing=True):
+    """
+    Fetch static WFPC2 calibration file and run `stsci.tools.convertwaiveredfits` on it.
+    
+    path : str
+        Output path of the reference file (generally should be in $uref).
+    
+    use_mast : bool
+        If True, try to fetch from "mast.stsci.edu//api/v0/download/file?uri",
+        otherwise, fetch from a static directory 
+        "ssb.stsci.edu/cdbs_open/cdbs/uref_linux/".
+        
+    """
+    from stsci.tools import convertwaiveredfits
+    
     try: # Python 3.x
         import http.client as httplib 
     except ImportError:  # Python 2.x
         import httplib
-
-    from stsci.tools import convertwaiveredfits
     
-    server='mast.stsci.edu'
-    conn = httplib.HTTPSConnection(server)
+    if file.endswith('h'):
+        # File like "g6q1912hu.r4h"
+        file = file[:-1].replace('.','_')+'f.fits'
+    
     outPath = os.path.join(path, file)
-    uri = 'mast:HST/product/'+file
-    
-    conn.request("GET", "/api/v0/download/file?uri="+uri)
+    if os.path.exists(outPath) & skip_existing:
+        print("# fetch_wfpc2_calib: {0} exists".format(outPath))
+        return True
+        
+    if use_mast:
+        server='mast.stsci.edu'
+        uri = 'mast:HST/product/'+file
+        request_path="/api/v0/download/file?uri="+uri
+    else:
+        server='ssb.stsci.edu'
+        request_path = '/cdbs_open/cdbs/uref_linux/'+file
+        
+    if verbose:
+        print('# fetch_wfpc2_calib: "{0}" to {1}'.format(server+request_path, path))
+        
+    conn = httplib.HTTPSConnection(server)
+            
+    conn.request("GET", request_path)
     resp = conn.getresponse()
     fileContent = resp.read()
+    conn.close()
     
+    # check for file 
+    if len(fileContent) < 4096:
+        print('ERROR: "{0}" failed to download.  Try `use_mast={1}`.'.format(server+request_path, (use_mast is False)))
+        status = False
+        raise FileNotFoundError
+    else:
+        print("# fetch_wfpc2_calib: {0} (COMPLETE)".format(outPath))
+        status = True
+
     # save to file
     with open(outPath,'wb') as FLE:
         FLE.write(fileContent)
-
-    # check for file 
-    if not os.path.isfile(outPath):
-        print("ERROR: " + outPath + " failed to download.")
-        status = False
-    else:
-        print("COMPLETE: ", outPath)
-        status = True
-        
-    conn.close()
-    
+            
     if status:
+        # Convert to standard FITS
         try:
             hdu = convertwaiveredfits.convertwaiveredfits(outPath)
-            hdu.writeto(outPath.replace('.fits','_c0h.fits'))
+            while 'HISTORY' in hdu[0].header:
+                hdu[0].header.remove('HISTORY')
+
+            hdu.writeto(outPath.replace('.fits','_c0h.fits'),
+                        overwrite=overwrite, output_verify='fix')
         except:
             return True
             
-        while 'HISTORY' in hdu[0].header:
-            hdu[0].header.remove('HISTORY')
             
 def fetch_config_files(ACS=False, get_sky=True, get_stars=True, get_epsf=True):
     """
@@ -3673,10 +4839,16 @@ def fetch_config_files(ACS=False, get_sky=True, get_stars=True, get_epsf=True):
     tarfiles = ['{0}/WFC3.IR.G102.cal.V4.32.tar.gz'.format(ftpdir),
                 '{0}/WFC3.IR.G141.cal.V4.32.tar.gz'.format(ftpdir)]
     
+    # Test config files
+    tarfiles = ['https://s3.amazonaws.com/grizli/CONF/WFC3.IR.G102.WD.V4.32.tar.gz', 'https://s3.amazonaws.com/grizli/CONF/WFC3.IR.G141.WD.V4.32.tar.gz'] 
+    
+    tarfiles += ['https://s3.amazonaws.com/grizli/CONF/ACS.WFC.CHIP1.Stars.conf', 'https://s3.amazonaws.com/grizli/CONF/ACS.WFC.CHIP2.Stars.conf'] 
+    
     if get_sky:
         tarfiles.append('{0}/grism_master_sky_v0.5.tar.gz'.format(ftpdir))
     
-    gURL = 'http://www.stsci.edu/~brammer/Grizli/Files'
+    #gURL = 'http://www.stsci.edu/~brammer/Grizli/Files'
+    gURL = 'https://s3.amazonaws.com/grizli/CONF'
     tarfiles.append('{0}/WFC3IR_extended_PSF.v1.tar.gz'.format(gURL))
     
     if ACS:
@@ -3689,13 +4861,20 @@ def fetch_config_files(ACS=False, get_sky=True, get_stars=True, get_epsf=True):
             print('Get {0}'.format(file))
             os.system('curl -o {0} {1}'.format(file, url))
         
-        os.system('tar xzvf {0}'.format(file))
+        if 'tar' in file:
+            os.system('tar xzvf {0}'.format(file))
     
     if get_epsf:
         # ePSF files for fitting point sources
-        psf_path = 'http://www.stsci.edu/hst/wfc3/analysis/PSF/psf_downloads/wfc3_ir/'
+        #psf_path = 'http://www.stsci.edu/hst/wfc3/analysis/PSF/psf_downloads/wfc3_ir/'
+        psf_path = 'http://www.stsci.edu/~jayander/STDPSFs/WFC3IR/'
+        ir_psf_filters = ['F105W', 'F125W', 'F140W', 'F160W']
+        
+        # New PSFs
+        ir_psf_filters += ['F110W', 'F127M']
+        
         files = ['{0}/PSFSTD_WFC3IR_{1}.fits'.format(psf_path, filt) 
-                 for filt in ['F105W', 'F125W', 'F140W', 'F160W']]
+                 for filt in ir_psf_filters]
              
         for url in files:
             file=os.path.basename(url)
@@ -3809,9 +4988,12 @@ class EffectivePSF(object):
         Files should be located in ${GRIZLI}/CONF/ directory.
         """
         self.epsf = {}
-        for filter in ['F105W', 'F125W', 'F140W', 'F160W']:
+        for filter in ['F105W', 'F110W', 'F125W', 'F140W', 'F160W', 'F127M']:
             file = os.path.join(GRIZLI_PATH, 'CONF',
                                 'PSFSTD_WFC3IR_{0}.fits'.format(filter))
+            
+            if not os.path.exists(file):
+                continue
             
             data = pyfits.open(file)[0].data.T
             data[data < 0] = 0 
@@ -3846,7 +5028,9 @@ class EffectivePSF(object):
             
         # Dummy, use F105W ePSF for F098M and F110W
         self.epsf['F098M'] = self.epsf['F105W']
-        self.epsf['F110W'] = self.epsf['F105W']
+        self.epsf['F128N'] = self.epsf['F125W']
+        self.epsf['F130N'] = self.epsf['F125W']
+        self.epsf['F132N'] = self.epsf['F125W']
         
         # Extended
         self.extended_epsf = {}
@@ -3856,7 +5040,7 @@ class EffectivePSF(object):
             
             if not os.path.exists(file):
                 msg = 'Extended PSF file \'{0}\' not found.'.format(file)
-                msg += '\n                   Get the archive from http://www.stsci.edu/~brammer/Grizli/Files/WFC3IR_extended_PSF.v1.tar.gz'
+                msg += '\n                   Get the archive from https://s3.amazonaws.com/grizli/CONF/WFC3IR_extended_PSF.v1.tar.gz'
                 msg += '\n                   and unpack in ${GRIZLI}/CONF/' 
                 raise FileNotFoundError(msg)
                 
@@ -3874,6 +5058,9 @@ class EffectivePSF(object):
             
         self.extended_epsf['F098M'] = self.extended_epsf['F105W']
         self.extended_epsf['F110W'] = self.extended_epsf['F105W']
+        self.extended_epsf['F128N'] = self.extended_epsf['F125W']
+        self.extended_epsf['F130N'] = self.extended_epsf['F125W']
+        self.extended_epsf['F132N'] = self.extended_epsf['F125W']
         
     def get_at_position(self, x=507, y=507, filter='F140W'):
         """Evaluate ePSF at detector coordinates
@@ -4066,9 +5253,9 @@ class EffectivePSF(object):
             return psf_offset, bkg, None, None
         else:    
             chi2 = (resid**2).sum()
-            print(params, chi2)
+            #print(params, chi2)
             return chi2
-    
+            
     def fit_ePSF(self, sci, center=None, origin=[0,0], ivar=1, N=7, 
                  filter='F140W', tol=1.e-4, guess=None, get_extended=False,
                  method='lm', ds9=None, psf_params=None, only_centering=True):
@@ -4184,7 +5371,7 @@ class EffectivePSF(object):
         # 
         # return output_psf, psf_params
     
-    def get_ePSF(self, psf_params, origin=[0,0], shape=[20,20], filter='F140W', get_extended=False, get_background=False):
+    def get_ePSF(self, psf_params, sci=None, ivar=1, origin=[0,0], shape=[20,20], filter='F140W', get_extended=False, get_background=False):
         """
         Evaluate an Effective PSF
         """
@@ -4217,9 +5404,15 @@ class EffectivePSF(object):
         else:
             extended_data = None
         
-        ones = np.ones(sh, dtype=float)
-        args = (self, psf_xy, ones, ones, xp-x0, yp-y0, extended_data, 'model', None)
-        output_psf, bkg, _, _ = _objfun(psf_params, *args)
+        if sci is not None:
+            ivar_mask = np.ones_like(sci)
+            ivar_mask *= ivar
+        else:
+            sci = np.ones(sh, dtype=float)
+            ivar_mask = sci*1
+            
+        args = (self, psf_xy, sci, ivar_mask, xp-x0, yp-y0, extended_data, 'model', None)
+        output_psf, bkg, _a, _b = _objfun(psf_params, *args)
              
         #output_psf = self.eval_ePSF(psf_xy, dx, dy, extended_data=extended_data)*psf_params[0]
         
@@ -4352,8 +5545,8 @@ class GTable(astropy.table.Table):
         
         Parameters
         ----------
-        other : `~astropy.table.Table` or `GTable`
-            Other table to match positions from.
+        other : `~astropy.table.Table`, `GTable`, or `list`.
+            Other table to match positions from.  
         
         self_radec, other_radec : None or [str, str]
             Column names for RA and Dec.  If None, then try the following
@@ -4456,7 +5649,12 @@ class GTable(astropy.table.Table):
                  
         else:
             other_xy = self_wcs.all_world2pix(other_radec, pixel_index)
-            cut = (other_xy[:,0] > -pad) & (other_xy[:,0] < self_wcs._naxis1+pad) & (other_xy[:,1] > -pad) & (other_xy[:,1] < self_wcs._naxis2+pad)
+            if hasattr(self_wcs, 'pixel_shape'):
+                _naxis1, _naxis2 = self_wcs.pixel_shape
+            else:
+                _naxis1, _naxis2 = self_wcs._naxis1, self_wcs._naxis2
+                
+            cut = (other_xy[:,0] > -pad) & (other_xy[:,0] < _naxis1+pad) & (other_xy[:,1] > -pad) & (other_xy[:,1] < _naxis2+pad)
             other_xy = other_xy[cut,:]          
             xy_center = self_wcs.wcs.crpix*1
         
@@ -4493,7 +5691,29 @@ class GTable(astropy.table.Table):
             return match_ix, tf, dx, rms, fig
         else:
             return match_ix, tf, dx, rms
-            
+
+    def add_aladdin(self, rd_cols=['ra', 'dec'], fov=0.5, size=(400,200), default_view="P/DSS2/color"):
+        """
+        Add AladinLite DIV column to the table
+
+        fov : fov in degrees
+        size : size of DIVs (w, h) in pixels (w, h)
+
+        """
+        # <!-- include Aladin Lite CSS file in the head section of your page -->
+        # <link rel="stylesheet" href="//aladin.u-strasbg.fr/AladinLite/api/v2/latest/aladin.min.css" />
+        # 
+        # <!-- you can skip the following line if your page already integrates the jQuery library -->
+        # <script type="text/javascript" src="//code.jquery.com/jquery-1.12.1.min.js" charset="utf-8"></script>
+
+        ala = ["""    <div id="aladin-lite-div-{i}" style="width:{wsize}px;height:{hsize}px;"></div>
+        <script type="text/javascript" src="http://aladin.u-strasbg.fr/AladinLite/api/v2/latest/aladin.min.js" charset="utf-8"></script>
+        <script type="text/javascript">
+            var aladin = A.aladin('#aladin-lite-div-{i}', xxxsurvey: "{survey}", fov:{fov}, target: "{ra} {dec}"yyy);
+        </script></div>""".format(i=i, ra=row[rd_cols[0]], dec=row[rd_cols[1]], survey=default_view, fov=fov, hsize=size[1], wsize=size[0]).replace('xxx','{').replace('yyy','}') for i, row in enumerate(self)]
+
+        self['aladin'] = ala
+                
     def write_sortable_html(self, output, replace_braces=True, localhost=True, max_lines=50, table_id=None, table_class="display compact", css=None, filter_columns=[], buttons=['csv'], toggle=True, use_json=False):
         """Wrapper around `~astropy.table.Table.write(format='jsviewer')`.
         
@@ -4563,6 +5783,16 @@ td {font-size: 10pt;}
         # Read all lines
         lines = open(output).readlines()
         
+        if 'aladin' in self.colnames:
+            # Insert Aladin CSS
+            aladin_css = '<link rel="stylesheet" href="https://aladin.u-strasbg.fr/AladinLite/api/v2/latest/aladin.min.css" />\n'
+            
+            for il, line in enumerate(lines):
+                if '<link href=' in line:
+                    break
+                                
+            lines.insert(il+1, aladin_css)
+            
         # Export buttons
         if buttons:
             # CSS
@@ -4783,11 +6013,14 @@ $.UpdateFilterURL = function () {{
             for c in self.colnames:
                 new[c] = self[c]
             
-            new.write('/tmp/table.csv', format='csv', overwrite=True)
-            pd = GTable.gread('/tmp/table.csv').to_pandas()
+            if 'aladin' in self.colnames:
+                pd = GTable(new).to_pandas()
+            else:
+                new.write('/tmp/table.csv', format='csv', overwrite=True)
+                pd = GTable.gread('/tmp/table.csv').to_pandas()
             
             # Reformat to json
-            json_data = '        ' + pd.to_json(orient='values').replace('],[','\n    ]xxxxxx\n    [\n        ').replace(',',',\n        ').replace('xxxxxx',',')
+            json_data = '        ' + pd.to_json(orient='values').replace('],[','\n    ]xxxxxx\n    [\n        ').replace(', ', 'xcommaspacex').replace(',',',\n        ').replace('xxxxxx',',').replace('xcommaspacex',', ')
             json_str = """{{
   "data": 
 {0}  
@@ -5139,7 +6372,110 @@ def fix_flt_nan(flt_file, bad_bit=4096, verbose=True):
             im['DQ',ext].data[mask] |= bad_bit
     
     im.flush()
-         
+
+def dump_flt_dq(filename, replace=('.fits', '.dq.fits.gz'), verbose=True):
+    """Dump FLT/FLC header & DQ extensions to a compact file
+    
+    Parameters
+    ----------
+    filename : str
+        FLT/FLC filename.
+    
+    replace : (str, str)
+        Replace arguments for output filename:
+        
+        >>> output_filename = filename.replace(replace[0], replace[1])
+        
+    Returns
+    -------
+    Writes header and compact DQ array to `output_filename`.
+    
+    """
+    im = pyfits.open(filename)
+    hdus = []
+    for i in [1,2,3,4]:
+        if ('SCI',i) in im:
+            header = im['SCI',i].header
+            dq = im['DQ',i].data.flatten()
+            nz = np.where(dq > 0)[0]   
+            dq_data = np.array([nz, dq[nz]])
+            hdu = pyfits.ImageHDU(header=header, data=dq_data)
+            hdus.append(hdu)
+    
+    output_filename = filename.replace(replace[0], replace[1])
+
+    msg = '# dump_flt_dq: {0} > {1}'.format(filename, output_filename)
+    utils.log_comment(utils.LOGFILE, msg, verbose=verbose, show_date=True)
+        
+    pyfits.HDUList(hdus).writeto(output_filename, overwrite=True, 
+                                 output_verify='fix')
+
+def apply_flt_dq(filename, replace=('.fits', '.dq.fits.gz'), verbose=True, or_combine=False):
+    """
+    Read and apply the compact exposure information file
+    
+    Parameters
+    ----------
+    filename : str
+        FLT/FLC filename.
+    
+    replace : (str, str)
+        Replace arguments for output DQ filename:
+        
+        >>> output_filename = filename.replace(replace[0], replace[1])
+    
+    or_combine : bool
+        If True, then apply DQ data in `output_filename` with OR logic.  
+        
+        If False, then reset the DQ extensions to be exactly those in 
+        `output_filename`.
+        
+    Returns
+    -------
+    Writes header and compact DQ array to `output_filename`.
+    
+    """
+    
+    output_filename = filename.replace(replace[0], replace[1])
+    
+    if not os.path.exists(output_filename):
+        return False
+
+    im = pyfits.open(filename, mode='update')
+    
+    msg = '# apply_flt_dq: {1} > {0}'.format(filename, output_filename)
+    utils.log_comment(utils.LOGFILE, msg, verbose=verbose, show_date=True)
+    
+    dq = pyfits.open(output_filename)
+    for ext in [1,2,3,4]:
+        if (('SCI',ext) in im) & (('SCI',ext) in dq):
+            nz, dq_i = dq['SCI',ext].data
+            i,j = np.unravel_index(nz, im['SCI',ext].data.shape)
+            
+            # Apply DQ
+            if or_combine:
+                im['DQ',ext].data[i,j] != dq_i
+            else:
+                im['DQ',ext].data *= 0
+                im['DQ',ext].data[i,j] = dq_i
+            
+            # Copy header
+            has_blotsky = 'BLOTSKY' in im['SCI',ext].header
+            for k in dq['SCI',ext].header:
+                # test = dq['SCI',ext].header[k] == im['SCI',ext].header[k]
+                # if not test:
+                #     print(k, dq['SCI',ext].header[k], im['SCI',ext].header[k])
+                if k in ['BITPIX','NAXIS1','NAXIS2']:
+                    continue
+                
+                im['SCI',ext].header[k] = dq['SCI',ext].header[k]
+            
+            if (not has_blotsky) & ('BLOTSKY' in dq['SCI',ext].header):
+                im['SCI',ext].header['BLOTSKY'] = False
+                                
+    im.flush()
+    im.close()
+    
 def RGBtoHex(vals, rgbtype=1):
   """Converts RGB values in a variety of formats to Hex values.
 
@@ -5165,3 +6501,126 @@ def RGBtoHex(vals, rgbtype=1):
   #Ensure values are rounded integers, convert to hex, and concatenate
   return '#' + ''.join(['{:02X}'.format(int(round(x))) for x in vals])
 
+def catalog_mask(cat, ecol='FLUXERR_APER_0', max_err_percentile=90, pad=0.05, pad_is_absolute=False, min_flux_radius=1.):
+    """
+    """
+    test = np.isfinite(cat['FLUX_AUTO'])
+    if 'FLUX_RADIUS' in cat.colnames:
+        test &= cat['FLUX_RADIUS'] > min_flux_radius
+    
+    test &= (cat['THRESH'] > 0) & (cat['THRESH'] < 1e28)
+
+    not_edge = hull_edge_mask(cat['X_IMAGE'], cat['Y_IMAGE'], 
+                              pad=pad, pad_is_absolute=pad_is_absolute)
+    if ecol in cat.colnames:
+        valid = np.isfinite(cat[ecol])
+        test &= cat[ecol] < np.percentile(cat[ecol][(~not_edge) & valid], 
+                                          max_err_percentile)
+    
+    return test
+    
+def hull_edge_mask(x, y, pad=100, pad_is_absolute=True, mask=None):
+    """
+    Compute geometrical edge mask for points within a convex hull
+    
+    Parameters
+    ----------
+    x, y : array
+        Coordinates of the catalog
+        
+    pad : float
+        Buffer padding
+        
+    pad_is_absolute : bool
+        If True, then the buffer is taken from `pad` (e.g., pixels).  If 
+        False, then `pad` is treated as a fraction of the linear dimension
+        of the catalog (`~sqrt(hull area)`).
+    
+    mask : bool array
+        Mask to apply to x/y before computing the convex hull
+        
+    Returns
+    -------
+    mask : bool array
+        True if points within the buffered hull
+    
+    """
+    
+    from scipy.spatial import ConvexHull
+    from shapely.geometry import Polygon, Point
+    
+    xy = np.array([x, y]).T
+    
+    if mask is None:
+        hull = ConvexHull(xy)
+    else:
+        hull = ConvexHull(xy[mask,:])
+        
+    pxy = xy[hull.vertices,:]
+    poly = Polygon(pxy)
+    
+    if pad_is_absolute:
+        buff = -pad
+    else:
+        # linear dimension ~ sqrt(area)
+        buff = -pad*np.sqrt(poly.area)
+    
+    pbuff = poly.buffer(buff)
+    in_buff = np.array([pbuff.contains(Point([x[i], y[i]])) for i in range(len(x))])
+    
+    return in_buff
+       
+def hull_area(x, y):
+    from scipy.spatial import ConvexHull
+    from shapely.geometry import Polygon, Point
+    
+    xy = np.array([x, y]).T
+    hull = ConvexHull(xy)
+    pxy = xy[hull.vertices,:]
+    poly = Polygon(pxy)
+    
+    return poly.area
+
+LOGFILE = '/tmp/grizli.log'
+
+def log_function_arguments(LOGFILE, frame, func='func', verbose=True):
+    """
+    Log local variables to a file
+    """
+    args = inspect.getargvalues(frame).locals
+    args.pop('frame')
+    for k in list(args.keys()): 
+        if hasattr(args[k], '__builtins__'):
+            args.pop(k)
+    
+    if func is not None:
+        logstr = '\n{0}(**{1})\n'
+    else:
+        logstr = '\n{1}'
+        
+    logstr = logstr.format(func, args)
+    log_comment(LOGFILE, logstr, verbose=verbose, show_date=True)
+    
+def log_comment(LOGFILE, comment, verbose=False, show_date=False):
+    import time
+    fp = open(LOGFILE,'a')
+    
+    if show_date:
+        fp.write('\n# ({0})\n'.format(time.ctime()))
+    
+    fp.write('{0}\n'.format(comment))
+    fp.close()
+    
+    if verbose:
+        print(comment)
+        
+def log_exception(LOGFILE, traceback):
+    import time
+    
+    fp = open(LOGFILE,'a')
+    fp.write('\n########################################## \n# ! Exception ({0})\n'.format(time.ctime()))
+    trace = traceback.format_exc(limit=2)
+    fp.write('#\n# !'+'\n# !'.join(trace.split('\n')))
+    fp.write('\n######################################### \n\n')
+    fp.close()
+    

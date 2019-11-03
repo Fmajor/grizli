@@ -1,7 +1,13 @@
+#!/usr/bin/env python
+
 #from distutils.core import setup
 #from distutils.extension import Extension
 from setuptools import setup
 from setuptools.extension import Extension
+from setuptools.config import read_configuration
+
+import ah_bootstrap
+import builtins
 
 import subprocess
 
@@ -24,32 +30,53 @@ else:
 
 print('C extension: {0}'.format(cext))
 
-extensions = [
-    Extension("grizli.utils_c.interp", ["grizli/utils_c/interp"+cext],
-        include_dirs = [numpy.get_include()],
-        libraries=["m"]),
+if os.name == 'nt':
+    # Windows
+    extensions = [
+        Extension("grizli.utils_c.interp", ["grizli/utils_c/interp"+cext],
+            include_dirs = [numpy.get_include()]),
         
-    Extension("grizli.utils_c.disperse", ["grizli/utils_c/disperse"+cext],
-        include_dirs = [numpy.get_include()],
-        libraries=["m"]),
+        Extension("grizli.utils_c.disperse", ["grizli/utils_c/disperse"+cext],
+            include_dirs = [numpy.get_include()]),
+    ]
+else:
+    # Not windows
+    extensions = [
+        Extension("grizli.utils_c.interp", ["grizli/utils_c/interp"+cext],
+            include_dirs = [numpy.get_include()],
+            libraries=["m"]),
+        
+        Extension("grizli.utils_c.disperse", ["grizli/utils_c/disperse"+cext],
+            include_dirs = [numpy.get_include()],
+            libraries=["m"]),
+    ] 
 
-]
+if 0:      
+    #update version
+    args = 'git describe --tags'
+    p = subprocess.Popen(args.split(), stdout=subprocess.PIPE)
+    version = p.communicate()[0].decode("utf-8").strip()
 
-#update version
-args = 'git describe --tags'
-p = subprocess.Popen(args.split(), stdout=subprocess.PIPE)
-version = p.communicate()[0].decode("utf-8").strip()
+    # version = "0.8.0"
+    # version = "0.9.0" # bounded fits by default
+    # version = "0.10.0" # Relatively small fixes, fix bug in 1D wave
+    # version = "0.11.0" # Refactored parameter files
+    # version = "0.12.0" # Increment to fix tag tar files
+    # version = "0.13.0" # Various pipeline modifications, add aws scripts
+    # version = "1.0" # First production version
 
-# version = "0.8.0"
+    version_str = """# git describe --tags
+    __version__ = "{0}"\n""".format(version)
 
-version_str = """# git describe --tags
-__version__ = "{0}"\n""".format(version)
-
-fp = open('grizli/version.py','w')
-fp.write(version_str)
-fp.close()
-print('Git version: {0}'.format(version))
-
+    fp = open('grizli/version.py','w')
+    fp.write(version_str)
+    fp.close()
+    print('Git version: {0}'.format(version))
+else:
+    from astropy_helpers.version_helpers import generate_version_py
+    builtins._ASTROPY_PACKAGE_NAME_ = read_configuration('setup.cfg')['metadata']['name']
+    version = generate_version_py()
+    
 if USE_CYTHON:
     extensions = cythonize(extensions)
 
@@ -69,7 +96,7 @@ setup(
     license = "MIT",
     url = "https://github.com/gbrammer/grizli",
     download_url = "https://github.com/gbrammer/grizli/tarball/{0}".format(version),
-    packages=['grizli', 'grizli/pipeline', 'grizli/utils_c', 'grizli/tests', 'grizli/galfit'],
+    packages=['grizli', 'grizli/pipeline', 'grizli/utils_c', 'grizli/tests', 'grizli/galfit', 'grizli/aws'],
     # requires=['numpy', 'scipy', 'astropy', 'drizzlepac', 'stwcs'],
     # long_description=read('README.rst'),
     classifiers=[
@@ -78,6 +105,6 @@ setup(
         'Topic :: Scientific/Engineering :: Astronomy',
     ],
     ext_modules = extensions,
-    package_data={'grizli': ['data/*', 'data/templates/*', 'data/templates/stars/*', 'data/templates/fsps/*']},
+    package_data={'grizli': ['data/*', 'data/*fits.gz', 'data/templates/*', 'data/templates/stars/*', 'data/templates/fsps/*']},
     # scripts=['grizli/scripts/flt_info.sh'],
 )
