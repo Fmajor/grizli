@@ -356,7 +356,7 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
     
         
 def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
-                    get_footprint = False, 
+                    get_footprint = False, output_info_name = None,
                     translate = {'AEGIS-':'aegis-', 
                                  'COSMOS-':'cosmos-', 
                                  'GNGRISM':'goodsn-', 
