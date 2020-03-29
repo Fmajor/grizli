@@ -26,6 +26,18 @@ NO_NEWLINE = '\x1b[1A\x1b[1M'
 # R_V for Galactic extinction
 MW_RV = 3.1
 
+MPL_COLORS = {'b':'#1f77b4', 'orange':'#ff7f0e', 'g':'#2ca02c', 'r':'#d62728', 'purple':'#9467bd', 'brown':'#8c564b', 'pink':'#e377c2', 'gray':'#7f7f7f', 'olive':'#bcbd22', 'cyan':'#17becf'}
+
+# sns.color_palette("husl", 8) 
+SNS_HUSL = {'r':(0.9677975592919913, 0.44127456009157356, 0.5358103155058701),
+ 'orange':(0.8087954113106306, 0.5634700050056693, 0.19502642696727285),
+ 'olive':(0.5920891529639701, 0.6418467016378244, 0.1935069134991043),
+ 'g':(0.19783576093349015, 0.6955516966063037, 0.3995301037444499),
+ 'sea':(0.21044753832183283, 0.6773105080456748, 0.6433941168468681),
+ 'b':(0.22335772267769388, 0.6565792317435265, 0.8171355503265633),
+ 'purple':(0.6423044349219739, 0.5497680051256467, 0.9582651433656727),
+ 'pink':(0.9603888539940703, 0.3814317878772117, 0.8683117650835491)}
+ 
 GRISM_COLORS = {'G800L':(0.0, 0.4470588235294118, 0.6980392156862745),
       'G102':(0.0, 0.6196078431372549, 0.45098039215686275),
       'G141':(0.8352941176470589, 0.3686274509803922, 0.0),
@@ -228,7 +240,8 @@ def radec_to_targname(ra=0, dec=0, round_arcsec=(4, 60), precision=2, targstr='j
     return targname
     
 def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1, 
-                       scale_by_pixel_area=False):
+                       scale_by_pixel_area=False, wcs_mask=True, 
+                       fill_value=0):
     """
     Own blot function for blotting exact pixels without rescaling for input 
     and output pixel size
@@ -249,6 +262,12 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
     scale_by_pixel_area : bool
         If True, then scale the output image by the square of the image pixel
         scales (out**2/in**2), i.e., the pixel areas.
+    
+    wcs_mask : bool
+        Use fast WCS masking.  If False, use `pyregion`.
+    
+    fill_value : int/float
+        Value in `out_data` not covered by `in_data`.
         
     Returns
     -------
@@ -287,11 +306,15 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
     # Shapes, in numpy array convention (y, x)
     if hasattr(in_wcs, 'pixel_shape'):  
         in_sh = in_wcs.pixel_shape[::-1]
+    elif hasattr(in_wcs, 'array_shape'):
+        in_sh = in_wcs.array_shape
     else:
         in_sh = (in_wcs._naxis2, in_wcs._naxis1)
         
     if hasattr(out_wcs, 'pixel_shape'):
         out_sh = out_wcs.pixel_shape[::-1]
+    elif hasattr(out_wcs, 'array_shape'):
+        out_sh = out_wcs.array_shape
     else:
         out_sh = (out_wcs._naxis2, out_wcs._naxis1)
             
@@ -303,14 +326,26 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
 
     olap = in_poly.intersection(out_poly)
     if olap.area == 0:
-        print('No overlap')
+        if verbose:
+            print('No overlap')
         return np.zeros(out_sh)
-        
+    
     # Region mask for speedup
-    olap_poly = np.array(olap.exterior.xy)
-    poly_reg = "fk5\npolygon("+','.join(['{0}'.format(p) for p in olap_poly.T.flatten()])+')\n'
-    reg = pyregion.parse(poly_reg)
-    mask = reg.get_mask(header=to_header(out_wcs), shape=out_sh)
+    if np.isclose(olap.area, out_poly.area, 0.01):
+        mask = np.ones(out_sh, dtype=bool)
+    elif wcs_mask:
+        # Use wcs / Path
+        from matplotlib.path import Path
+        out_xy = out_wcs.all_world2pix(np.array(in_poly.exterior.xy).T, 0)-0.5
+        out_xy_path = Path(out_xy)
+        yp, xp = np.indices(out_sh)
+        pts = np.array([xp.flatten(), yp.flatten()]).T
+        mask = out_xy_path.contains_points(pts).reshape(out_sh) 
+    else:
+        olap_poly = np.array(olap.exterior.xy)
+        poly_reg = "fk5\npolygon("+','.join(['{0}'.format(p) for p in olap_poly.T.flatten()])+')\n'
+        reg = pyregion.parse(poly_reg)
+        mask = reg.get_mask(header=to_header(out_wcs), shape=out_sh)
     
     #yp, xp = np.indices(in_data.shape)
     #xi, yi = xp[mask], yp[mask]
@@ -338,7 +373,7 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
     m2 = (xi >= 0) & (yi >= 0) & (xi < in_sh[1]) & (yi < in_sh[0])
     xi, yi, xf, yf, xo, yo = xi[m2], yi[m2], xf[m2], yf[m2], xo[m2], yo[m2]
     
-    out_data = np.zeros(out_sh, dtype=np.float)
+    out_data = np.ones(out_sh, dtype=np.float)*fill_value
     status = pixel_map_c(np.cast[np.float](in_data), xi, yi, out_data, xo, yo)
         
     # Fill empty 
@@ -352,7 +387,7 @@ def blot_nearest_exact(in_data, in_wcs, out_wcs, verbose=True, stepsize=-1,
         out_scale  = get_wcs_pscale(out_wcs)
         out_data *= out_scale**2/in_scale**2
         
-    return out_data
+    return out_data.astype(in_data.dtype)
     
         
 def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
@@ -613,9 +648,9 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                     
                 fp_j = Polygon(wcs_j.calc_footprint())
                 if j == 0:
-                    fp_i = fp_j
+                    fp_i = fp_j.buffer(1./3600)
                 else:
-                    fp_i = fp_i.union(fp_j)
+                    fp_i = fp_i.union(fp_j.buffer(1./3600))
             
             output_list[i]['footprint'] = fp_i
             
@@ -1364,11 +1399,11 @@ def detect_with_photutils(sci, err=None, dq=None, seg=None, detect_thresh=2.,
     return catalog, seg
     
 def nmad(data):
-    """Normalized NMAD=1.48 * `~.astropy.stats.median_absolute_deviation`
+    """Normalized NMAD=1.4826022 * `~.astropy.stats.median_absolute_deviation`
     
     """
     import astropy.stats
-    return 1.48*astropy.stats.median_absolute_deviation(data)
+    return 1.4826022*astropy.stats.median_absolute_deviation(data)
 
 def get_line_wavelengths():
     """Get a dictionary of common emission line wavelengths and line ratios
@@ -1545,16 +1580,23 @@ def get_line_wavelengths():
     
     line_wavelengths['SII'] = [6718.29, 6732.67]
     line_ratios['SII'] = [1., 1.]   
-
+    
     line_wavelengths['SII-6717'] = [6718.29]
     line_ratios['SII-6717'] = [1.]   
     line_wavelengths['SII-6731'] = [6732.67]
     line_ratios['SII-6731'] = [1.]
+
+    line_wavelengths['SII-4075'] = [4069.75, 4077.5]
+    line_ratios['SII-4075'] = [1.,1.]
+    line_wavelengths['SII-4070'] = [4069.75]
+    line_ratios['SII-4075'] = [1.]
+    line_wavelengths['SII-4078'] = [4077.5]
+    line_ratios['SII-4078'] = [1.]
     
     line_wavelengths['HeII-4687'] = [4687.5]
     line_ratios['HeII-4687'] = [1.]
     line_wavelengths['HeII-5412'] = [5412.5]
-    line_ratios['HeII-5410'] = [1.]
+    line_ratios['HeII-5412'] = [1.]
     line_wavelengths['HeI-5877'] = [5877.2]
     line_ratios['HeI-5877'] = [1.]
     line_wavelengths['HeI-3889'] = [3889.5]
@@ -1672,7 +1714,7 @@ def get_line_wavelengths():
     line_ratios['full'] += [1./3.8/2*line_ratios['Balmer 10kK'][1]*r for r in line_ratios['SII']]
 
 
-    # Lines from Hegele 2006, low-Z HII galaxies
+    # Lines from Hagele 2006, low-Z HII galaxies
     # SDSS J002101.03+005248.1    
     line_wavelengths['full'] += line_wavelengths['SIII']
     line_ratios['full'] += [401./1000/2.44*line_ratios['Balmer 10kK'][1]*r for r in line_ratios['SIII']]
@@ -1721,6 +1763,58 @@ def get_line_wavelengths():
     
     
     return line_wavelengths, line_ratios 
+    
+def emission_line_templates():
+    """
+    Testing FSPS line templates
+    """
+    import numpy as np
+    from grizli import utils
+    import fsps
+    sp = fsps.StellarPopulation(imf_type=1, zcontinuous=1)
+    
+    sp_params = {}
+    
+    sp_params['starburst'] = {'sfh':4, 'tau':0.3, 'tage':0.1,
+          'logzsol':-1, 'gas_logz':-1, 
+          'gas_logu':-2.5}
+    
+    sp_params['mature'] = {'sfh':4, 'tau':0.2, 'tage':0.9,
+        'logzsol':-0.2, 'gas_logz':-0.2, 
+        'gas_logu':-2.5}
+    
+    line_templates = {}
+                
+    for t in sp_params:
+        pset = sp_params[t]
+        header = 'wave flux\n\n'
+        for p in pset:
+            header += '{0} = {1}\n'.format(p, pset[p])
+            if p == 'tage':
+                continue
+            
+            print(p, pset[p])
+            sp.params[p] = pset[p]
+    
+        spec = {}
+        for neb in [True, False]:    
+            sp.params['add_neb_emission'] = neb
+            sp.params['add_neb_continuum'] = neb
+            wave, spec[neb] = sp.get_spectrum(tage=pset['tage'], peraa=True) 
+            #plt.plot(wave, spec[neb], alpha=0.5)
+        
+        neb_only = spec[True] - spec[False]
+        neb_only = neb_only / neb_only.max()
+        neb_only = spec[True] / spec[True].max()
+
+        plt.plot(wave, neb_only, label=t, alpha=0.5)
+    
+        neb_only[neb_only < 1.e-4] = 0
+        
+        np.savetxt('fsps_{0}_lines.txt'.format(t), np.array([wave, neb_only]).T, fmt='%.5e', header=header)
+        
+        line_templates[t] = utils.SpectrumTemplate(wave=wave, flux=neb_only, name='fsps_{0}_lines'.format(t))
+        
     
 class SpectrumTemplate(object):
     def __init__(self, wave=None, flux=None, central_wave=None, fwhm=None, velocity=False, fluxunits=FLAMBDA_CGS, waveunits=u.angstrom, name='template', lorentz=False, err=None):
@@ -2909,6 +3003,7 @@ def array_templates(templates, wave=None, max_R=5000, z=0, apply_igm=False):
                 if is_obsframe[j]:
                     ma = flux_arr[j,:].sum()
                     ma = ma if ma > 0 else 1
+                    ma = 1
                     
                     flux_arr[j,:] *= flux_arr[i,:]/ma
     
@@ -3402,8 +3497,17 @@ def transform_wcs(in_wcs, translation=[0.,0.], rotation=0., scale=1.):
     # Compute shift for crval, not crpix
     crval = in_wcs.all_pix2world([in_wcs.wcs.crpix-np.array(translation)], 
                                      1).flatten()
-    
-    out_wcs.wcs.crval = crval
+
+    # Compute shift at image center
+    if hasattr(in_wcs, '_naxis1'):
+        refpix = np.array([in_wcs._naxis1/2., in_wcs._naxis2/2.])
+    else:
+        refpix = np.array(in_wcs._naxis)/2.
+
+    c0 = in_wcs.all_pix2world([refpix], 1).flatten()
+    c1 = in_wcs.all_pix2world([refpix-np.array(translation)], 1).flatten()
+        
+    out_wcs.wcs.crval += c1-c0
     
     theta = -rotation
     _mat = np.array([[np.cos(theta), -np.sin(theta)],
@@ -3419,7 +3523,7 @@ def transform_wcs(in_wcs, translation=[0.,0.], rotation=0., scale=1.):
     if hasattr(out_wcs, 'pixel_shape'):
         _naxis1 = int(np.round(out_wcs.pixel_shape[0]*scale))
         _naxis2 = int(np.round(out_wcs.pixel_shape[1]*scale))
-        out_wcs.pixel_shape = [_naxis1, _naxis2]
+        out_wcs._naxis = [_naxis1, _naxis2]
     elif hasattr(out_wcs, '_naxis1'):
         out_wcs._naxis1 = int(np.round(out_wcs._naxis1*scale))
         out_wcs._naxis2 = int(np.round(out_wcs._naxis2*scale))
@@ -3958,8 +4062,8 @@ def make_wcsheader(ra=40.07293, dec=-1.6137748, size=2, pixscale=0.1, get_hdu=Fa
         npix = np.cast[int]([size[0]/pixscale, size[1]/pixscale])
         
     hout = pyfits.Header()
-    hout['CRPIX1'] = npix[0]/2
-    hout['CRPIX2'] = npix[1]/2
+    hout['CRPIX1'] = npix[0]//2
+    hout['CRPIX2'] = npix[1]//2
     hout['CRVAL1'] = ra
     hout['CRVAL2'] = dec
     hout['CD1_1'] = -cdelt[0]
@@ -4106,9 +4210,9 @@ def make_maximal_wcs(files, pixel_scale=0.1, get_hdu=True, pad=90, verbose=True,
     for i, (wcs, file, chip) in enumerate(wcs_list):
         p_i = Polygon(wcs.calc_footprint())
         if group_poly is None:
-            group_poly = p_i
+            group_poly = p_i.buffer(1./3600)
         else:
-            group_poly = group_poly.union(p_i)
+            group_poly = group_poly.union(p_i.buffer(1./3600))
             
         x0, y0 = np.cast[float](group_poly.centroid.xy)[:,0]
         if verbose:
@@ -4201,7 +4305,8 @@ def header_keys_from_filelist(fits_files, keywords=[], ext=0, colname_case=str.l
     return tab     
     
 def drizzle_from_visit(visit, output, pixfrac=1., kernel='point', 
-                       clean=True, include_saturated=True, keep_bits=None):
+                       clean=True, include_saturated=True, keep_bits=None, 
+                       skip=None):
     """
     Make drizzle mosaic from exposures in a visit dictionary
     
@@ -4222,6 +4327,9 @@ def drizzle_from_visit(visit, output, pixfrac=1., kernel='point',
     else:
         return None 
     
+    if not hasattr(outputwcs, '_naxis1'):
+        outputwcs._naxis1, outputwcs._naxis2 = outputwcs._naxis
+    
     outputwcs.pscale = get_wcs_pscale(outputwcs)
     
     output_poly = Polygon(outputwcs.calc_footprint())
@@ -4236,6 +4344,9 @@ def drizzle_from_visit(visit, output, pixfrac=1., kernel='point',
         if olap.area > 0:
             indices.append(i)
     
+    if skip is not None:
+        indices = indices[::skip]
+        
     NTOTAL = len(indices)
     
     for i in indices:
@@ -4329,7 +4440,10 @@ def drizzle_from_visit(visit, output, pixfrac=1., kernel='point',
                 #                wcskey=' ')
                 if not hasattr(wcs_i, 'pixel_shape'):
                     wcs_i.pixel_shape = wcs_i._naxis1, wcs_i._naxis2
-                    
+                
+                if not hasattr(wcs_i, '_naxis1'):
+                    wcs_i._naxis1, wcs_i._naxis2 = wcs_i._naxis
+                        
                 wcs_list.append(wcs_i)
                 
         if count == 0:
@@ -4409,8 +4523,8 @@ def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
     from drizzlepac import adrizzle
     from drizzlepac import cdriz
     
-    from stsci.tools import logutil
-    log = logutil.create_logger(__name__)
+    #from stsci.tools import logutil
+    #log = logutil.create_logger(__name__)
     
     # Output header / WCS    
     if outputwcs is None:
@@ -4418,10 +4532,19 @@ def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
     else:
         header = to_header(outputwcs)
     
+    header['DRIZKERN'] = kernel, "Drizzle kernel"
+    header['DRIZPIXF'] = pixfrac, "Drizzle pixfrac"
+    
+    if not hasattr(outputwcs, '_naxis1'):
+        outputwcs._naxis1, outputwcs._naxis2 = outputwcs._naxis
+    
     # Try to fix deprecated WCS
     for wcs_i in wcs_list:
         if not hasattr(wcs_i, 'pixel_shape'):
             wcs_i.pixel_shape = wcs_i._naxis1, wcs_i._naxis2
+        
+        if not hasattr(wcs_i, '_naxis1'):
+            wcs_i._naxis1, wcs_i._naxis2 = wcs_i._naxis
         
     # Output WCS requires full WCS map?
     if calc_wcsmap < 2:
@@ -4447,7 +4570,9 @@ def drizzle_array_groups(sci_list, wht_list, wcs_list, outputwcs=None,
     N = len(sci_list)
     for i in range(N):
         if verbose:
-            log.info('Drizzle array {0}/{1}'.format(i+1, N))
+            #log.info('Drizzle array {0}/{1}'.format(i+1, N))
+            msg = 'Drizzle array {0}/{1}'.format(i+1, N)
+            log_comment(LOGFILE, msg, verbose=verbose, show_date=True)
         
         if calc_wcsmap > 1:
             wcsmap =  WCSMapAll#(wcs_list[i], outputwcs)
@@ -4604,7 +4729,7 @@ def symlink_templates(force=False):
         else:
             print('File exists: {0}'.format(out_file))
 
-def fetch_acs_wcs_files(beams_file, bucket_name='aws-grivam'):
+def fetch_acs_wcs_files(beams_file, bucket_name='grizli-v1'):
     """
     Fetch wcs files for a given beams.fits files
     """   
@@ -4987,7 +5112,8 @@ class EffectivePSF(object):
         
         Files should be located in ${GRIZLI}/CONF/ directory.
         """
-        self.epsf = {}
+        self.epsf = OrderedDict()
+        
         for filter in ['F105W', 'F110W', 'F125W', 'F140W', 'F160W', 'F127M']:
             file = os.path.join(GRIZLI_PATH, 'CONF',
                                 'PSFSTD_WFC3IR_{0}.fits'.format(filter))
@@ -5001,30 +5127,24 @@ class EffectivePSF(object):
             self.epsf[filter] = data
         
         # UVIS
-        for filter in ['F275W', 'F336W', 'F438W', 'F606W', 'F814W', 'F850L']:
-            file = os.path.join(GRIZLI_PATH, 'CONF',
-                                'PSFSTD_WFC3UV_{0}.fits'.format(filter))
-            
-            if not os.path.exists(file):
-                continue
-            
+        filter_files = glob.glob(os.path.join(GRIZLI_PATH, 'CONF',
+                            'PSFSTD_WFC3UV*.fits'))
+        filter_files.sort()
+        for file in filter_files:
             data = pyfits.open(file, ignore_missing_end=True)[0].data.T
             data[data < 0] = 0 
-            
-            self.epsf[filter] = data
-        
+            filt = '_'.join(file.strip('.fits').split('_')[2:])
+            self.epsf[filt+'U'] = data
+                    
         # ACS
-        for filter in ['F606W', 'F814W']:
-            file = os.path.join(GRIZLI_PATH, 'CONF',
-                                'PSFSTD_ACSWFC_{0}.fits'.format(filter))
-            
-            if not os.path.exists(file):
-                continue
-            
+        filter_files = glob.glob(os.path.join(GRIZLI_PATH, 'CONF',
+                            'PSFSTD_ACSWFC*.fits'))
+        filter_files.sort()
+        for file in filter_files:
             data = pyfits.open(file, ignore_missing_end=True)[0].data.T
             data[data < 0] = 0 
-            
-            self.epsf[filter] = data
+            filt = '_'.join(file.strip('.fits').split('_')[2:])
+            self.epsf[filt] = data
             
         # Dummy, use F105W ePSF for F098M and F110W
         self.epsf['F098M'] = self.epsf['F105W']
@@ -5540,7 +5660,7 @@ class GTable(astropy.table.Table):
         
         return rd_pair
        
-    def match_to_catalog_sky(self, other, self_radec=None, other_radec=None):
+    def match_to_catalog_sky(self, other, self_radec=None, other_radec=None, nthneighbor=1):
         """Compute `~astropy.coordinates.SkyCoord` projected matches between two `GTable` tables.
         
         Parameters
@@ -5556,7 +5676,10 @@ class GTable(astropy.table.Table):
                 >>> rd_pairs['ra'] = 'dec'
                 >>> rd_pairs['ALPHA_J2000'] = 'DELTA_J2000'
                 >>> rd_pairs['X_WORLD'] = 'Y_WORLD'
-        
+            
+        nthneighbor : int
+            See `~astropy.coordinates.SkyCoord.coo.match_to_catalog_sky`.
+            
         Returns
         -------
         idx : int array
@@ -5610,7 +5733,14 @@ class GTable(astropy.table.Table):
             
         other_coo = SkyCoord(ra=other[rd[0]], dec=other[rd[1]])
                      
-        idx, d2d, d3d = other_coo.match_to_catalog_sky(self_coo)
+        try:
+            idx, d2d, d3d = other_coo.match_to_catalog_sky(self_coo, nthneighbor=nthneighbor)
+        except:
+            print('Couldn\'t run SkyCoord.match_to_catalog_sky with'
+                  'nthneighbor')
+            
+            idx, d2d, d3d = other_coo.match_to_catalog_sky(self_coo)
+            
         return idx, d2d.to(u.arcsec)
 
     def match_triangles(self, other, self_wcs=None, x_column='X_IMAGE', y_column='Y_IMAGE', mag_column='MAG_AUTO', other_ra='X_WORLD', other_dec='Y_WORLD', pixel_index=1, match_kwargs={}, pad=100, show_diagnostic=False, auto_keep=3, maxKeep=10, auto_limit=3, ba_max=0.99, scale_density=10):
@@ -5650,11 +5780,13 @@ class GTable(astropy.table.Table):
         else:
             other_xy = self_wcs.all_world2pix(other_radec, pixel_index)
             if hasattr(self_wcs, 'pixel_shape'):
-                _naxis1, _naxis2 = self_wcs.pixel_shape
+                _naxis1, _naxis2 = self_wcs._naxis
             else:
                 _naxis1, _naxis2 = self_wcs._naxis1, self_wcs._naxis2
                 
-            cut = (other_xy[:,0] > -pad) & (other_xy[:,0] < _naxis1+pad) & (other_xy[:,1] > -pad) & (other_xy[:,1] < _naxis2+pad)
+            cut = (other_xy[:,0] > -pad) & (other_xy[:,0] < _naxis1+pad) 
+            cut &= (other_xy[:,1] > -pad) & (other_xy[:,1] < _naxis2+pad)
+            
             other_xy = other_xy[cut,:]          
             xy_center = self_wcs.wcs.crpix*1
         
@@ -6405,7 +6537,7 @@ def dump_flt_dq(filename, replace=('.fits', '.dq.fits.gz'), verbose=True):
     output_filename = filename.replace(replace[0], replace[1])
 
     msg = '# dump_flt_dq: {0} > {1}'.format(filename, output_filename)
-    utils.log_comment(utils.LOGFILE, msg, verbose=verbose, show_date=True)
+    log_comment(LOGFILE, msg, verbose=verbose, show_date=True)
         
     pyfits.HDUList(hdus).writeto(output_filename, overwrite=True, 
                                  output_verify='fix')
@@ -6444,7 +6576,7 @@ def apply_flt_dq(filename, replace=('.fits', '.dq.fits.gz'), verbose=True, or_co
     im = pyfits.open(filename, mode='update')
     
     msg = '# apply_flt_dq: {1} > {0}'.format(filename, output_filename)
-    utils.log_comment(utils.LOGFILE, msg, verbose=verbose, show_date=True)
+    log_comment(LOGFILE, msg, verbose=verbose, show_date=True)
     
     dq = pyfits.open(output_filename)
     for ext in [1,2,3,4]:
@@ -6514,7 +6646,8 @@ def catalog_mask(cat, ecol='FLUXERR_APER_0', max_err_percentile=90, pad=0.05, pa
                               pad=pad, pad_is_absolute=pad_is_absolute)
     if ecol in cat.colnames:
         valid = np.isfinite(cat[ecol])
-        test &= cat[ecol] < np.percentile(cat[ecol][(~not_edge) & valid], 
+        if max_err_percentile < 100:
+            test &= cat[ecol] < np.percentile(cat[ecol][(~not_edge) & valid], 
                                           max_err_percentile)
     
     return test
@@ -6585,7 +6718,22 @@ LOGFILE = '/tmp/grizli.log'
 
 def log_function_arguments(LOGFILE, frame, func='func', verbose=True):
     """
-    Log local variables to a file
+    Log local variables, e.g., parameter arguements to a file
+    
+    Parameters
+    ----------
+    LOGFILE : str or None
+        Output file.  If `None`, then force `verbose=True`.
+    
+    frame : `~inspect.currentframe()`
+        Namespace object.
+    
+    func : str
+        Function name to use
+        
+    verbose : bool
+        Print messaage to stdout.
+    
     """
     args = inspect.getargvalues(frame).locals
     args.pop('frame')
@@ -6599,28 +6747,64 @@ def log_function_arguments(LOGFILE, frame, func='func', verbose=True):
         logstr = '\n{1}'
         
     logstr = logstr.format(func, args)
-    log_comment(LOGFILE, logstr, verbose=verbose, show_date=True)
+    msg = log_comment(LOGFILE, logstr, verbose=verbose, show_date=True)
     
-def log_comment(LOGFILE, comment, verbose=False, show_date=False):
+    return msg
+    
+def log_comment(LOGFILE, comment, verbose=False, show_date=False, mode='a'):
+    """
+    Log a message to a file, optionally including a date tag
+    """
     import time
-    fp = open(LOGFILE,'a')
-    
+        
     if show_date:
-        fp.write('\n# ({0})\n'.format(time.ctime()))
+        msg = '# ({0})\n'.format(time.ctime())
+    else:
+        msg = ''
+        #fp.write('\n# ({0})\n'.format(time.ctime()))
     
-    fp.write('{0}\n'.format(comment))
-    fp.close()
+    msg += '{0}\n'.format(comment)
+    
+    if LOGFILE is not None:
+        fp = open(LOGFILE, mode)
+        fp.write(msg)
+        fp.close()
     
     if verbose:
-        print(comment)
-        
-def log_exception(LOGFILE, traceback):
+        print(msg[:-1])
+    
+    return msg
+    
+def log_exception(LOGFILE, traceback, verbose=True, mode='a'):
+    """
+    Log exception information to a file, or print to screen
+    
+    Parameters
+    ----------
+    LOGFILE : str or None
+        Output file.  If `None`, then force `verbose=True`.
+    
+    traceback : builtin traceback module
+        Exception traceback, from global `import traceback`.
+    
+    verbose : bool
+        Print exception to stdout.
+    
+    mode : 'a', 'w'
+        File mode on `open(LOGFILE, mode)`, i.e., append or write.
+    
+    """
     import time
     
-    fp = open(LOGFILE,'a')
-    fp.write('\n########################################## \n# ! Exception ({0})\n'.format(time.ctime()))
     trace = traceback.format_exc(limit=2)
-    fp.write('#\n# !'+'\n# !'.join(trace.split('\n')))
-    fp.write('\n######################################### \n\n')
-    fp.close()
+    log = '\n########################################## \n# ! Exception ({0})\n'.format(time.ctime())
+    log += '#\n# !'+'\n# !'.join(trace.split('\n'))
+    log += '\n######################################### \n\n'
+    if verbose | (LOGFILE is None):
+        print(log)
+        
+    if LOGFILE is not None:
+        fp = open(LOGFILE, mode)
+        fp.write(log)
+        fp.close()
     

@@ -5,9 +5,11 @@ import os
 import inspect
 import traceback
 import glob
+import time
 
 import numpy as np
 import astropy.io.fits as pyfits
+import astropy.wcs as pywcs
 
 from .. import prep, utils
 from .default_params import UV_N_FILTERS, UV_M_FILTERS, UV_W_FILTERS
@@ -79,6 +81,19 @@ def get_extra_data(root='j114936+222414', HOME_PATH='/Volumes/Pegasus/Grizli/Aut
     
     tab = utils.GTable.gread(os.path.join(HOME_PATH, '{0}_footprint.fits'.format(root)))
     
+    # Fix CLEAR filter names
+    for i, filt_i in enumerate(tab['filter']):
+        if 'clear' in filt_i.lower():
+            spl = filt_i.lower().split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        #print(filt_i, s)
+                        filt_i = s.upper()
+                        break
+
+            tab['filter'][i] = filt_i.upper()
+    
     ra, dec = tab.meta['RA'], tab.meta['DEC']
 
     fp = np.load(os.path.join(HOME_PATH, '{0}_footprint.npy'.format(root)),
@@ -90,6 +105,19 @@ def get_extra_data(root='j114936+222414', HOME_PATH='/Volumes/Pegasus/Grizli/Aut
     dims = np.array([(xy[0].max()-xy[0].min())*np.cos(dec/180*np.pi), xy[1].max()-xy[1].min()])*60
         
     extra = query.run_query(box=[ra, dec, radius], proposid=[], instruments=instruments, extensions=['FLT'], filters=filters, extra=query.DEFAULT_EXTRA)
+    
+    # Fix CLEAR filter names
+    for i, filt_i in enumerate(extra['filter']):
+        if 'clear' in filt_i.lower():
+            spl = filt_i.lower().split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        #print(filt_i, s)
+                        filt_i = s.upper()
+                        break
+
+            extra['filter'][i] = filt_i.upper()
     
     for k in tab.meta:
         extra.meta[k] = tab.meta[k]
@@ -291,6 +319,18 @@ def go(root='j010311+131615', HOME_PATH='$PWD',
         HOME_PATH = os.getcwd()
     
     exptab = utils.GTable.gread(os.path.join(HOME_PATH, '{0}_footprint.fits'.format(root)))
+    # Fix CLEAR filter names
+    for i, filt_i in enumerate(exptab['filter']):
+        if 'clear' in filt_i.lower():
+            spl = filt_i.lower().split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        #print(filt_i, s)
+                        filt_i = s.upper()
+                        break
+
+            exptab['filter'][i] = filt_i.upper()
     
     utils.LOGFILE = os.path.join(HOME_PATH, '{0}.auto_script.log.txt'.format(root))
     
@@ -826,6 +866,19 @@ def fetch_files(field_root='j142724+334246', HOME_PATH='/Volumes/Pegasus/Grizli/
     tab = utils.GTable.gread('{0}/{1}_footprint.fits'.format(HOME_PATH,
                              field_root))
     
+    # Fix CLEAR filter names
+    for i, filt_i in enumerate(tab['filter']):
+        if 'clear' in filt_i.lower():
+            spl = filt_i.lower().split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        #print(filt_i, s)
+                        filt_i = s.upper()
+                        break
+
+            tab['filter'][i] = filt_i.upper()
+    
     use_filters = utils.column_string_operation(tab['filter'], filters, method='startswith', logical='or')
     tab = tab[use_filters]
     
@@ -983,13 +1036,7 @@ def parse_visits(field_root='', HOME_PATH='./', use_visit=True, combine_same_pa=
     `combine_minexp` exposures.
     
     """
-    import os
-    import glob
     import copy
-
-    import numpy as np
-    import astropy.io.fits as pyfits
-    import astropy.wcs as pywcs
 
     #import grizli.prep
     try:
@@ -1071,18 +1118,24 @@ def parse_visits(field_root='', HOME_PATH='./', use_visit=True, combine_same_pa=
         
         visits = [combined[k] for k in combined]
         
-        # Account for timing
-        print('Before max_dt={0:.2f} filter: {1} visits'.format(max_dt, 
-                                                                len(visits)))
+        # Account for timing to combine only exposures taken at an 
+        # epoch defined by `max_dt` days.
+        msg = 'parse_visits(combine_same_pa={0}),'.format(combine_same_pa)
+        msg += ' max_dt={1:.1f}: {0} {2:>3} visits'
+        utils.log_comment(utils.LOGFILE, 
+                          msg.format('BEFORE', max_dt, len(visits)),
+                          verbose=True, show_date=True)
                                                                 
         split_list = []
         for v in visits:
             split_list.extend(utils.split_visit(v, max_dt=max_dt, 
-                              visit_split_shift=1000))
+                              visit_split_shift=1.5))
                 
         visits = split_list
-        print('After  max_dt={0:.2f} filter: {1} visits'.format(max_dt,
-                                                                len(visits)))
+        utils.log_comment(utils.LOGFILE, 
+                          msg.format(' AFTER', max_dt, len(visits)),
+                          verbose=True, show_date=True)
+        
         get_visit_exposure_footprints(visits)
         
         print('** Combine same PA: **')
@@ -1177,9 +1230,9 @@ def get_visit_exposure_footprints(visit_file='j1000p0210_visits.npy', check_path
                     fp_i = utils.get_flt_footprint(flt_file=pfile)
                     
                     if visit_fp is None:
-                        visit_fp = fp_i
+                        visit_fp = fp_i.buffer(1./3600)
                     else:
-                        visit_fp = visit_fp.union(fp_i).buffer(0.05/3600)
+                        visit_fp = visit_fp.union(fp_i.buffer(1./3600))
                     break
             
             visit['footprints'].append(fp_i)
@@ -1587,7 +1640,6 @@ mag_lim=17, cat=None, cols=['mag_auto','ra','dec'], minR=8, dy=5, selection=None
         
         
     """
-    import astropy.wcs as pywcs
     from scipy.interpolate import griddata    
     
     if cat is None:
@@ -1602,6 +1654,10 @@ mag_lim=17, cat=None, cols=['mag_auto','ra','dec'], minR=8, dy=5, selection=None
         selection = mag < 17
     
     for file in visit['files']:
+        if not os.path.exists(file):
+            print('Mask diffraction spikes (skip file {0})'.format(file))
+            continue
+        
         im = pyfits.open(file, mode='update')
         print('Mask diffraction spikes ({0}), N={1} objects'.format(file, selection.sum()))
         
@@ -1704,10 +1760,6 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
     given the image WCS/pixel size.
     
     """
-    import glob
-    import numpy as np
-    import astropy.io.fits as pyfits
-    import astropy.wcs as pywcs
     from photutils import segmentation, background
     import photutils.utils
     
@@ -1776,6 +1828,10 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
         source_xy = tab['X_WORLD'], tab['Y_WORLD']
     
     if filters is None:
+        visits_file = '{0}_visits.npy'.format(field_root)
+        if not os.path.exists(visits_file):
+            get_all_filters=True
+        
         if get_all_filters:
             filters = [file.split('_')[-3][len(field_root)+1:] for file in glob.glob('{0}-f*dr?_sci.fits*'.format(field_root))]
         else:
@@ -1904,10 +1960,6 @@ def photutils_catalog(field_root='j142724+334246', threshold=1.8, subtract_bkg=T
     Make a detection catalog with SExtractor and then measure
     photometry with `~photutils`.
     """
-    import glob
-    import numpy as np
-    import astropy.io.fits as pyfits
-    import astropy.wcs as pywcs
     from photutils import segmentation, background
     import photutils.utils
     
@@ -2687,8 +2739,6 @@ def fine_alignment(field_root='j142724+334246', HOME_PATH='/Volumes/Pegasus/Griz
     from drizzlepac import updatehdr
             
     import astropy.units as u
-    import astropy.io.fits as pyfits
-    import astropy.wcs as pywcs
     from scipy.optimize import minimize, fmin_powell
     
     import copy
@@ -3344,6 +3394,10 @@ def make_combined_mosaics(root, fix_stars=False, mask_spikes=False, skip_single_
     Drizzle combined mosaics
     """
     
+    # if False:
+    #     # j = 125+110w
+    #     auto_script.field_rgb('j013804m2156', HOME_PATH=None, show_ir=True, filters=['f160w','j','f105w'], xsize=16, rgb_scl=[1, 0.85, 1], rgb_min=-0.003)
+            
     visits_file = '{0}_visits.npy'.format(root)
     visits, groups, info = np.load(visits_file, allow_pickle=True)
     
@@ -3890,18 +3944,13 @@ def field_rgb(root='j010514+021532', xsize=6, output_dpi=None, HOME_PATH='./', s
     """
     RGB image of the field mosaics
     """
-    import os
-    import glob
-    import numpy as np
-    import time
     
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MultipleLocator
 
     #import montage_wrapper
     from astropy.visualization import make_lupton_rgb
-    import astropy.wcs as pywcs
-    import astropy.io.fits as pyfits
+
     
     try:
         from .. import utils
@@ -4022,18 +4071,20 @@ def field_rgb(root='j010514+021532', xsize=6, output_dpi=None, HOME_PATH='./', s
         
         ds9.set('rgb')
         ds9.set('rgb channel red')
-        ds9.view(rimg, header=ims[rf][0].header)
+        wcs_header = utils.to_header(pywcs.WCS(ims[rf][0].header))
+        ds9.view(rimg, header=wcs_header)
         ds9.set_defaults(); ds9.set('cmap value 9.75 0.8455')
         
         ds9.set('rgb channel green')
-        ds9.view(gimg)#, header=ims[gf][0].header)
+        ds9.view(gimg, wcs_header)
         ds9.set_defaults(); ds9.set('cmap value 9.75 0.8455')
 
         ds9.set('rgb channel blue')
-        ds9.view(bimg)#, header=ims[bf][0].header)
+        ds9.view(bimg, wcs_header)
         ds9.set_defaults(); ds9.set('cmap value 9.75 0.8455')
 
         ds9.set('rgb channel red')
+        ds9.set('rgb lock colorbar')
         
         return False
     
@@ -4733,7 +4784,9 @@ def field_psf(root='j020924-044344', HOME_PATH='/Volumes/Pegasus/Grizli/Automati
             
             for ri, di in zip(ra.flatten(), dec.flatten()):
                 slice_h, wcs_slice = utils.make_wcsheader(ra=ri, dec=di, size=size, pixscale=scl, get_hdu=False, theta=0)
-                psf_i = GP.get_psf(ra=ri, dec=di, filter=filter.upper(), pixfrac=pf, kernel=kern, verbose=False, wcs_slice=wcs_slice, get_extended=True, get_weight=True)
+                
+                get_extended = (filter.upper() in ['F098M', 'F110W', 'F105W', 'F125W', 'F140W', 'F160W'])
+                psf_i = GP.get_psf(ra=ri, dec=di, filter=filter.upper(), pixfrac=pf, kernel=kern, verbose=False, wcs_slice=wcs_slice, get_extended=get_extended, get_weight=True)
                 if ix == 0:
                     msk_f = ((psf_i[1].data != 0) & np.isfinite(psf_i[1].data))*1
                     if msk_f.sum() == 0:
