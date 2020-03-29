@@ -102,7 +102,8 @@ def write_params_to_yml(kwargs, output_file='grizli.auto_script.yml', verbose=Tr
     if verbose:
         print('\n# Write parameters to {0}\n'.format(output_file))
         
-def get_yml_parameters(local_file=None, copy_defaults=False, verbose=True, skip_unknown_parameters=True):
+def get_yml_parameters(default_yml='auto_script_defaults.yml', local_file=None, copy_defaults=False, verbose=True,
+                       skip_unknown_parameters=True):
     """
     Read default parameters from the YAML file in `grizli/data`
     
@@ -110,13 +111,13 @@ def get_yml_parameters(local_file=None, copy_defaults=False, verbose=True, skip_
     
     kwargs : dict
         Parameter dictionary (with nested sub dictionaries).
-        
+
+    --- Additional Note ---
+    *<<200127>> Xin added kw of `default_yml`
     """
     import yaml
     import shutil
-    
-    default_yml = 'auto_script_defaults.yml'
-    
+
     path = os.path.join(os.path.dirname(__file__), '..', 'data', default_yml)
     
     if copy_defaults:

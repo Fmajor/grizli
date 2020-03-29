@@ -10,7 +10,7 @@ def apply_catalog_corrections(root, total_flux='flux_auto', auto_corr=True, get_
     
     from grizli import utils
     import mastquery.utils
-    
+
     cat = utils.read_catalog('{0}_phot.fits'.format(root))
     filters = []
     for c in cat.meta:
@@ -110,7 +110,7 @@ def apply_catalog_corrections(root, total_flux='flux_auto', auto_corr=True, get_
     else:
         run_morph_model = True
         
-    if os.path.exists(morph_model) & run_morph_model:
+    if os.path.exists(morph_model) & run_morph_model & False:    # switched off by Xin b/c the `clf.predict_proba()` causes errors <<200129>>
         if verbose:
             print('Apply morphological validity class')
         

@@ -104,10 +104,21 @@ def inspect(root='grizli', force=False):
     
     import matplotlib
     matplotlib.use("TkAgg") ### This needs to be run first!
-    
+
+    # https://github.com/gbrammer/wfc3
+    try:
+        from reprocess_wfc3 import reprocess_wfc3
+    except:
+        try:
+            from mywfc3 import reprocess_wfc3
+        except:
+            print("""
+    Couldn\'t `import reprocess_wfc3`.  
+    Get it from https://github.com/gbrammer/reprocess_wfc3 """)
+            return False
     #import mywfc3.reprocess_wfc3
-    from reprocess_wfc3 import reprocess_wfc3
-    
+    # from reprocess_wfc3 import reprocess_wfc3     # modified and added by Xin <<000119>>
+
     import astropy.io.fits as pyfits
     import numpy as np
     
