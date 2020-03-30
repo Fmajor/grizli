@@ -2666,14 +2666,14 @@ def generate_fit_params(field_root='j142724+334246', fitter=['nnls', 'bounded'],
 
     args = fitting.run_all(0, t0=t0, t1=t1, fwhm=1200, zr=zr, dz=dz, fitter=fitter, group_name=field_root, fit_stacks=False, prior=prior,  fcontam=fcontam, pline=pline, min_sens=min_sens, mask_sn_limit=np.inf, fit_beams=False,  root=field_root, fit_trace_shift=fit_trace_shift, phot=phot, use_phot_obj=use_phot_obj, verbose=True, scale_photometry=False, show_beams=True, overlap_threshold=10, get_ir_psfs=True, fit_only_beams=fit_only_beams, MW_EBV=MW_EBV, sys_err=sys_err, get_dict=True)
     
-    # # EAZY-py photometry object from HST photometry
-    # try:
-    #     import eazy.photoz
-    #     HAS_EAZY = True
-    # except:
-    #     HAS_EAZY = False
-    # modified by Xin, since EAZY-py not required given "photoz.py" <<200127>>
-    if include_photometry:
+    # EAZY-py photometry object from HST photometry
+    try:
+        import eazy.photoz
+        HAS_EAZY = True
+    except:
+        HAS_EAZY = False
+
+    if include_photometry & HAS_EAZY:   # can get rid of `HAS_EAZY`, since EAZY-py not required given "photoz.py" <<200329>>
         aper_ix = include_photometry*1
         utils.set_warnings()
         
