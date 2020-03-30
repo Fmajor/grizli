@@ -53,39 +53,7 @@ For example,
 
         """.format(os.getenv('iref')))
     
-    ### Sewpy
-#     try:
-#         import sewpy
-#     except:
-#         print("""
-# `sewpy` module needed for wrapping SExtractor within python.  
-# Get it from https://github.com/megalut/sewpy.
-# """)
-#         
-
 check_status()
- 
-def go_all():
-    """TBD
-    """
-    from stsci.tools import asnutil
-    info = Table.read('files.info', format='ascii.commented_header')
-        
-    # files=glob.glob('../RAW/i*flt.fits')
-    # info = utils.get_flt_info(files)
-    
-    for col in info.colnames:
-        if not col.islower():
-            info.rename_column(col, col.lower())
-    
-    output_list, filter_list = utils.parse_flt_files(info=info, uniquename=False)
-    
-    for key in output_list:
-        #files = [os.path.basename(file) for file in output_list[key]]
-        files = output_list[key]
-        asn = asnutil.ASNTable(files, output=key)
-        asn.create()
-        asn.write()
         
 def fresh_flt_file(file, preserve_dq=False, path='../RAW/', verbose=True, extra_badpix=True, apply_grism_skysub=True, crclean=False, mask_regions=True):
     """Copy "fresh" unmodified version of a data file from some central location
@@ -552,7 +520,7 @@ def clip_lists(input, output, clip=20):
 
 def match_lists(input, output, transform=None, scl=3600., simple=True,
                 outlier_threshold=5, toler=5, triangle_size_limit=[5, 800],
-                triangle_ba_max=0.9):
+                triangle_ba_max=0.9, assume_close=False):
     """TBD
     
     Compute matched objects and transformation between two [x,y] lists.
@@ -653,7 +621,8 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
                          rms_limit=2, use_guess=False, 
                          triangle_size_limit=[5,1800], max_sources=200,
                          triangle_ba_max=0.9, max_err_percentile=99, 
-                         catalog_mask_pad=0.05, match_catalog_density=None):
+                         catalog_mask_pad=0.05, match_catalog_density=None,
+                         assume_close=False):
     """TBD
     """     
     frame = inspect.currentframe()
@@ -726,7 +695,14 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
     # Only include reference objects in the DRZ footprint
     pix_origin = 1
     ref_x, ref_y = drz_wcs.all_world2pix(rd_ref, pix_origin).T
-    ref_cut = (ref_x > -100) & (ref_x < drz_wcs._naxis1+100) & (ref_y > -100) & (ref_y < drz_wcs._naxis2+100)
+    if hasattr(drz_wcs, '_naxis1'):
+        nx1, nx2 = drz_wcs._naxis1, drz_wcs._naxis2
+    else:
+        nx1, nx2 = drz_wcs._naxis
+        
+    ref_cut = (ref_x > -100) & (ref_x < nx1+100) 
+    ref_cut &= (ref_y > -100) & (ref_y < nx2+100)
+    
     if ref_cut.sum() == 0:
         print('{0}: no reference objects found in the DRZ footprint'.format(root))
         return False
@@ -800,7 +776,8 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
                 res = match_lists(output, input, scl=1., simple=simple,
                           outlier_threshold=outlier_threshold, toler=toler,
                           triangle_size_limit=triangle_size_limit,
-                          triangle_ba_max=triangle_ba_max)
+                          triangle_ba_max=triangle_ba_max,
+                          assume_close=assume_close)
                           
                 output_ix, input_ix, outliers, tf = res
                 break
@@ -819,7 +796,8 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
                               outlier_threshold=outlier_threshold,
                               toler=toler,
                               triangle_size_limit=triangle_size_limit,
-                              triangle_ba_max=triangle_ba_max)
+                              triangle_ba_max=triangle_ba_max,
+                              assume_close=assume_close)
             except:
                 pass
                 
@@ -831,8 +809,11 @@ def align_drizzled_image(root='', mag_limits=[14,23], radec=None, NITER=3,
         dx = input[input_ix] - tf_out
         rms = utils.nmad(np.sqrt((dx**2).sum(axis=1)))
         #outliers = outliers | (np.sqrt((dx**2).sum(axis=1)) > 4*rms)
-        outliers = (np.sqrt((dx**2).sum(axis=1)) > 4*rms)
-                                          
+        if len(outliers) > 20:
+            outliers = (np.sqrt((dx**2).sum(axis=1)) > 4*rms)
+        else:
+            outliers = (np.sqrt((dx**2).sum(axis=1)) > 10*rms)
+
         if outliers.sum() > 0:
             res2 = match_lists(output[output_ix][~outliers],
                               input[input_ix][~outliers], scl=1., 
@@ -2406,7 +2387,8 @@ def get_gaia_DR2_vizier_columns():
     
     
 def get_gaia_DR2_vizier(ra=165.86, dec=34.829694, radius=3., max=100000,
-                    catalog="I/345/gaia2", server='vizier.cfa.harvard.edu'):
+                    catalog="I/345/gaia2", server='vizier.cfa.harvard.edu', 
+                    use_mirror=False):
     
     from astroquery.vizier import Vizier
     import astropy.units as u
@@ -2426,6 +2408,7 @@ def get_gaia_DR2_vizier(ra=165.86, dec=34.829694, radius=3., max=100000,
         for i in range(len(keys)//N+1):
             v = Vizier(catalog=catalog, columns=['+_r']+keys[i*N:(i+1)*N])
             v.VIZIER_SERVER = server
+            v.ROW_LIMIT = max
             tab = v.query_region(coo, radius="{0}m".format(radius), catalog=catalog)[0]
             if i == 0:
                 result = tab
@@ -2467,7 +2450,7 @@ def gaia_dr2_conesearch_query(ra=165.86, dec=34.829694, radius=3., max=100000):
     
 def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
                          use_mirror=True, max_wait=20,
-                         max=100000):
+                         max=100000, output_file='gaia.fits'):
     """Query GAIA DR2 astrometric catalog
     
     Parameters
@@ -2585,7 +2568,7 @@ def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
     connection.request("GET",pathinfo+"/"+jobid+"/results/result")
     response = connection.getresponse()
     data = response.read()
-    outputFileName = "gaia.fits" + (not use_mirror)*".gz"
+    outputFileName = output_file + (not use_mirror)*".gz"
     try:
         outputFile = open(outputFileName, "w")
         outputFile.write(data)
@@ -2601,13 +2584,13 @@ def get_gaia_DR2_catalog(ra=165.86, dec=34.829694, radius=3.,
     if not use_mirror:
         ## ESA archive returns gzipped
         try:
-            os.remove('gaia.fits')
+            os.remove(output_file)
         except:
             pass
     
-        os.system('gunzip gaia.fits.gz')
+        os.system('gunzip {output_file}.gz'.format(output_file=output_file))
     
-    table = Table.read('gaia.fits', format='fits')
+    table = Table.read(output_file, format='fits')
     return table
 
 def gen_tap_box_query(ra=165.86, dec=34.829694, radius=3., max=100000, db='ls_dr7.tractor_primary', columns=['*'], rd_colnames=['ra','dec']):
@@ -2977,11 +2960,12 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
     
     """
     query_functions = {'SDSS':get_sdss_catalog, 
-                       'GAIA':get_gaia_DR2_catalog,
+                       'GAIA_TAP':get_gaia_DR2_catalog,
                        'PS1':get_panstarrs_catalog,
                        'WISE':get_irsa_catalog,
                        '2MASS':get_twomass_catalog,
                        'GAIA_Vizier':get_gaia_DR2_vizier,
+                       'GAIA':get_gaia_DR2_vizier,
                        'NSC':get_nsc_catalog,
                        'DES':get_desdr1_catalog,
                        'Hubble':get_hubble_source_catalog,
@@ -2999,8 +2983,12 @@ def get_radec_catalog(ra=0., dec=0., radius=3., product='cat', verbose=True, ref
                     ref_cat = query_functions[ref_src](ra=ra, dec=dec,
                                              radius=radius, use_mirror=False)
                 except:
-                    ref_cat = False
-                    
+                    try:
+                        ref_cat = query_functions[ref_src](ra=ra, dec=dec,
+                                                 radius=radius)
+                    except:
+                        ref_cat = False
+                                            
                 # Try GAIA mirror at Heidelberg
                 if ref_cat is False:
                     ref_cat = query_functions[ref_src](ra=ra, dec=dec,
@@ -3120,7 +3108,7 @@ def process_direct_grism_visit(direct={}, grism={}, radec=None,
     utils.log_function_arguments(utils.LOGFILE, frame,
                                  'prep.process_direct_grism_visit')
     
-    from stsci.tools import asnutil
+    #from stsci.tools import asnutil
     from stwcs import updatewcs
     from drizzlepac import updatehdr
     from drizzlepac.astrodrizzle import AstroDrizzle

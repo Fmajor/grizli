@@ -16,7 +16,38 @@ try:
     from .psf import DrizzlePSF
 except:
     from grizli.galfit.psf import DrizzlePSF
-    
+
+# Constraints
+# see https://users.obs.carnegiescience.edu/peng/work/galfit/EXAMPLE.CONSTRAINTS
+SERSIC_CONSTRAINTS = """{comp} x   -3 3       # relative to initial guess
+{comp} re  0.2 to 10
+{comp} n   0.4 to 8
+{comp} q   0.15 to 1
+"""
+
+LINKED_CONSTRAINTS = """# small shifts, limited re, q
+# linked x, y, q, pa
+2  x   -4 4       # relative to initial guess
+2  y   -4 4       # relative to initial guess
+2  re  0.51 to 10
+2  n   0.4 to 10
+2  q   0.15 to 1
+
+3  n   0.4 to 10
+3  re  0.51 to 20
+
+2  mag  12 to 35
+3  mag  12 to 35
+
+2-3 mag -3 3
+
+3_2 x offset
+3_2 y offset
+3_2 q  offset
+3_2 pa offset
+"""
+
+
 GALFIT_IMAGES = """===============================================================================
 # IMAGE and GALFIT CONTROL PARAMETERS
 A) {input}           # Input data image (FITS file)
@@ -25,7 +56,7 @@ C) {sigma}                # Sigma image name (made from data if blank or "none")
 D) {psf}   #        # Input PSF image and (optional) diffusion kernel
 E) {psf_sample}                   # PSF fine sampling factor relative to data 
 F) {mask}                # Bad pixel mask (FITS image or ASCII coord list)
-G) none                # File with parameter constraints (ASCII file) 
+G) {constraints}                # File with parameter constraints (ASCII file) 
 H) 1    {xmax}   1    {ymax}   # Image region to fit (xmin xmax ymin ymax)
 I) {sh}    {sh}          # Size of the convolution box (x y)
 J) 26.563              # Magnitude photometric zeropoint 
@@ -243,8 +274,7 @@ class GalfitObject(object):
         for k in keys:
             if k in self.pfree:
                 self.pfree[k] = keys[k]
-
-
+    
 class GalfitExpdisk(GalfitObject):
     def __init__(self, output=0, fix={}, **keys): 
         import copy
@@ -279,7 +309,16 @@ class GalfitExpdisk(GalfitObject):
         self.setfree(**fix)
                     
 class GalfitSersic(GalfitObject):
-    def __init__(self, output=0, disk=False, dev=False, fix={}, **keys): 
+    def __init__(self, output=0, disk=False, dev=False, gaussian=False, fix={}, **keys): 
+        """
+        Sersic profile.  
+        
+        Options to fix n for:
+                disk, n=1
+                 dev, n=4
+            gaussian, n=0.5
+            
+        """
         import copy
         
         self.pidx = OrderedDict([('pos', 1), 
@@ -315,6 +354,9 @@ class GalfitSersic(GalfitObject):
             self.setfree(n=0)
         elif dev:
             self.set(n=4)
+            self.setfree(n=0)
+        elif gaussian:
+            self.set(n=0.5)
             self.setfree(n=0)
 
 class GalfitKing(GalfitObject):
@@ -465,6 +507,8 @@ class Galfitter(object):
                                    sigma=sci_file.replace('_sci', '_rms'), 
                                    psf=sci_file.replace('_sci', '_psf'), 
                                    mask=sci_file.replace('_sci', '_mask'), 
+                                   constraints=sci_file.replace('_sci.fits',
+                                                              '.constraints'),
                                    xmax=sh, ymax=sh, sh=sh, 
                                    ps=platescale, psf_sample=psf_sample)
         
@@ -560,7 +604,7 @@ class Galfitter(object):
         
         fp = open(path+'galfit.feedme','w')
         
-        fp.write(GALFIT_IMAGES.format(input=path+'gf_sci.fits', output=path+'gf_out.fits', sigma=path+'gf_rms.fits', psf=psf_file, mask=path+'gf_mask.fits', xmax=sh, ymax=sh, sh=sh, ps=self.DPSF.driz_pscale, psf_sample=1))
+        fp.write(GALFIT_IMAGES.format(input=path+'gf_sci.fits', output=path+'gf_out.fits', sigma=path+'gf_rms.fits', psf=psf_file, mask=path+'gf_mask.fits', xmax=sh, ymax=sh, sh=sh, ps=self.DPSF.driz_pscale, psf_sample=1, constraints='none'))
         
         if gaussian_guess:
             fit, q, theta = fit_gauss(sci)

@@ -77,7 +77,7 @@ def run_all_parallel(id, get_output_data=False, args_file='fit_args.npy', **kwar
     t1 = time.time()
     
     return id, status, t1-t0
-    
+        
 def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter=['nnls','bounded'], group_name='grism', fit_stacks=True, only_stacks=False, prior=None, fcontam=0.2, pline=PLINE, min_line_sn=4, mask_sn_limit=np.inf, fit_only_beams=False, fit_beams=True, root='*', fit_trace_shift=False, phot=None, use_phot_obj=True, phot_obj=None, verbose=True, scale_photometry=False, show_beams=True, scale_on_stacked_1d=True, use_cached_templates=True, loglam_1d=True, overlap_threshold=5, MW_EBV=0., sys_err=0.03, huber_delta=4, get_student_logpdf=False, get_dict=False, bad_pa_threshold=1.6, units1d='flam', redshift_only=False, line_size=1.6, use_psf=False, get_line_width=False, sed_args={'bin':1, 'xlim':[0.3, 9]}, get_ir_psfs=True, min_mask=0.01, min_sens=0.02, mask_resid=True, save_stack=True,  get_line_deviations=True, bounded_kwargs=BOUNDED_DEFAULTS, write_fits_files=True, save_figures=True, fig_type='png', **kwargs):
     """Run the full procedure
     
@@ -92,8 +92,7 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     from grizli.stack import StackFitter
     from grizli.multifit import MultiBeam
     
-    # from .version import __version__ as grizli__version       # commented by Xin <<191103>>
-    grizli__version = 'xwang'
+    from . import __version__ as grizli__version
     from .pipeline import summary
     
     if get_dict:
@@ -1506,7 +1505,7 @@ class GroupFitter(object):
             
         return A_phot[:,mask]
         
-    def xfit_at_z(self, z=0, templates=[], fitter='nnls', fit_background=True, get_uncertainties=False, get_design_matrix=False, pscale=None, COEFF_SCALE=1.e-19, get_components=False, huber_delta=4, get_residuals=False, include_photometry=True, use_cached_templates=False, bounded_kwargs=BOUNDED_DEFAULTS):
+    def xfit_at_z(self, z=0, templates=[], fitter='nnls', fit_background=True, get_uncertainties=False, get_design_matrix=False, pscale=None, COEFF_SCALE=1.e-19, get_components=False, huber_delta=4, get_residuals=False, include_photometry=True, use_cached_templates=False, bounded_kwargs=BOUNDED_DEFAULTS, apply_sensitivity=True):
         """Fit the 2D spectra with a set of templates at a specified redshift.
         
         Parameters
@@ -1593,7 +1592,7 @@ class GroupFitter(object):
                     lylim = wavem/(1+z) < 1250
                     wigmz = np.ones_like(wavem)
                     wigmz[lylim] = IGM.full_IGM(z, wavem[lylim])   
-                    print('Use z-igm')      
+                    #print('Use z-igm')      
             else:
                 wigmz = 1.
         else:
@@ -1648,9 +1647,9 @@ class GroupFitter(object):
                 sl = self.mslices[j]
                 if t in beam.thumbs:
                     #print('Use thumbnail!', t)
-                    A[self.N+i, sl] = beam.compute_model(thumb=beam.thumbs[t], spectrum_1d=s, in_place=False, is_cgs=True)[beam.fit_mask]*COEFF_SCALE
+                    A[self.N+i, sl] = beam.compute_model(thumb=beam.thumbs[t], spectrum_1d=s, in_place=False, is_cgs=True, apply_sensitivity=apply_sensitivity)[beam.fit_mask]*COEFF_SCALE
                 else:
-                    A[self.N+i, sl] = beam.compute_model(spectrum_1d=s, in_place=False, is_cgs=True)[beam.fit_mask]*COEFF_SCALE
+                    A[self.N+i, sl] = beam.compute_model(spectrum_1d=s, in_place=False, is_cgs=True, apply_sensitivity=apply_sensitivity)[beam.fit_mask]*COEFF_SCALE
             
             # Multiply spline templates by single continuum template
             if ('spline' in t) & ('spline' in fitter):
@@ -1658,8 +1657,15 @@ class GroupFitter(object):
                 for k, t_i in enumerate(templates):
                     if t_i in self.Asave:
                         ma = A[self.N+k,:].sum()
-                        ma = ma if ma > 0 else 1                        
-                        A[self.N+k,:] *= A[self.N+i,:]/ma #COEFF_SCALE                                        
+                        ma = ma if ma > 0 else 1    
+                        ma = 1
+                                            
+                        try:
+                            A[self.N+k,:] *= A[self.N+i,:]/self._A*COEFF_SCALE #COEFF_SCALE                                        
+                            print('Mult _A')
+                        except:
+                            A[self.N+k,:] *= A[self.N+i,:]/ma #COEFF_SCALE                                        
+                        
                         templates[t_i].max_norm = ma
                         
                 # print('spline, set to zero: ', t)
@@ -3009,7 +3015,7 @@ class GroupFitter(object):
         # 
         #     return fig, sfit
     
-    def oned_figure(self, bin=1, wave=None, show_beams=True, minor=0.1, tfit=None, show_rest=False, axc=None, figsize=[6,4], fill=False, units='flam', min_sens_show=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False, apply_beam_mask=True, loglam_1d=True, trace_limits=None, show_contam=False):
+    def oned_figure(self, bin=1, wave=None, show_beams=True, minor=0.1, tfit=None, show_rest=False, axc=None, figsize=[6,4], fill=False, units='flam', min_sens_show=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False, apply_beam_mask=True, loglam_1d=True, trace_limits=None, show_contam=False, beam_models=None):
         """
         1D figure
         1D figure
@@ -3122,15 +3128,22 @@ class GroupFitter(object):
                 b_mask = beam.fit_mask.reshape(beam.sh)
             else:
                 b_mask = 1
-                
+            
             if tfit is not None:
                 m_i = beam.compute_model(spectrum_1d=sp, is_cgs=True, in_place=False).reshape(beam.sh)
-            
+            elif beam_models is not None:
+                m_i = beam_models[i]
+            else:
+                m_i = None
+                 
             if mspl is not None:
                 mspl_i = beam.compute_model(spectrum_1d=mspl, is_cgs=True, in_place=False).reshape(beam.sh)
                 
-            f_i = beam.compute_model(spectrum_1d=spf, is_cgs=True, in_place=False).reshape(beam.sh)
-            
+            try:
+                f_i = beam.flat_flam.reshape(beam.sh)*1
+            except:
+                f_i = beam.compute_model(spectrum_1d=spf, is_cgs=True, in_place=False).reshape(beam.sh)
+                
             if hasattr(beam, 'init_epsf'): # grizli.model.BeamCutout
                 if beam.grism.instrument == 'NIRISS':
                     grism = beam.grism.pupil
@@ -3140,8 +3153,12 @@ class GroupFitter(object):
                 clean = beam.grism['SCI'] - beam.contam 
                 if tfit is not None:
                     clean -= tfit['cfit']['bg {0:03d}'.format(i)][0]
+
+                if m_i is not None:
                     w, flm, erm = beam.beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar*b_mask)
-                
+                else:
+                    flm = None
+                        
                 if mspl is not None:
                     w, flspl, erm = beam.beam.optimal_extract(mspl_i, bin=bin, ivar=beam.ivar*b_mask)
                         
@@ -3154,6 +3171,8 @@ class GroupFitter(object):
                 clean = beam.sci - beam.contam
                 if tfit is not None:
                     clean -= - tfit['cfit']['bg {0:03d}'.format(i)][0]
+                
+                if m_i is not None:
                     w, flm, erm = beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar*b_mask)
                     
                 if mspl is not None:
@@ -3204,7 +3223,7 @@ class GroupFitter(object):
             fl *= unit_corr/pscale#/1.e-19
             #flc *= unit_corr/pscale#/1.e-19
             er *= unit_corr/pscale#/1.e-19
-            if tfit is not None:
+            if flm is not None:
                 flm *= unit_corr#/1.e-19
             
             f_alpha = 1./(self.Ngrism[grism.upper()])*0.8 #**0.5
@@ -3221,7 +3240,7 @@ class GroupFitter(object):
                     axc.errorbar(w[clip]/zp1, fl[clip], er[clip], color='k', alpha=f_alpha, marker='.', linestyle='None', zorder=1)
                 else:
                     axc.errorbar(w[clip]/zp1, fl[clip], er[clip], color=GRISM_COLORS[grism], alpha=f_alpha, marker='.', linestyle='None', zorder=1)
-            if tfit is not None:
+            if flm is not None:
                 axc.plot(w[clip]/zp1, flm[clip], color='r', alpha=f_alpha, linewidth=2, zorder=10) 
 
                 # Plot limits 
@@ -3355,6 +3374,10 @@ class GroupFitter(object):
         if (ymin < 0) & (ymax > 0):
             ymin = -0.1*ymax
         
+        if not np.isfinite(ymin+ymax):
+            ymin = 0.
+            ymax = 10.
+            
         axc.set_ylim(ymin-0.2*ymax, 1.2*ymax)            
         axc.grid()
         
@@ -3537,7 +3560,7 @@ class GroupFitter(object):
         return out
 
             
-    def initialize_masked_arrays(self):
+    def initialize_masked_arrays(self, seg_ids=None):
         """
         Initialize flat masked arrays for fast likelihood calculation
         """
@@ -3553,7 +3576,7 @@ class GroupFitter(object):
                 if hasattr(beam, 'xp_mask'):
                     delattr(beam, 'xp_mask')
                     
-                beam.beam.init_optimal_profile()
+                beam.beam.init_optimal_profile(seg_ids=seg_ids)
                 p.append(beam.beam.optimal_profile.flatten()[beam.fit_mask])
             
             self.optimal_profile_mask = np.hstack(p)
@@ -3610,15 +3633,16 @@ class GroupFitter(object):
         else:
             self.Nspec = self.Nmask
             
-    def get_flat_model(self, spectrum_1d, apply_mask=True, is_cgs=True):
+    def get_flat_model(self, spectrum_1d, id=None, apply_mask=True, is_cgs=True):
         """
         Generate model array based on the model 1D spectrum in `spectrum_1d`
 
         Parameters
         ----------
 
-        spectrum_1d : list
-            List of 1D arrays [wavelength, flux].
+        spectrum_1d : tuple, -1
+            Tuple of 1D arrays (wavelength, flux).  If `-1`, then use the 
+            in_place `model` attributes of each beam. 
 
         is_cgs : bool
             `spectrum_1d` flux array has CGS f-lambda flux density units.
@@ -3632,7 +3656,10 @@ class GroupFitter(object):
         """
         mfull = []
         for ib, beam in enumerate(self.beams):
-            model_i = beam.compute_model(spectrum_1d=spectrum_1d, 
+            if spectrum_1d is -1:
+                model_i = beam.model*1
+            else:
+                model_i = beam.compute_model(id=id, spectrum_1d=spectrum_1d, 
                                          is_cgs=is_cgs, in_place=False)
 
             if apply_mask:

@@ -35,10 +35,13 @@ class DrizzlePSF(object):
             
         """
         if info is None:
-            if beams is None:
-                info = self._get_flt_wcs(flt_files)
-            else:
+            if beams is not None:
                 info = self._get_wcs_from_beams(beams)
+            else:
+                if flt_files is None:
+                    info = self._get_wcs_from_hdrtab(driz_image)
+                else:
+                    info = self._get_flt_wcs(flt_files)
                 
         self.flt_keys, self.wcs, self.footprint = info
         self.flt_files = list(np.unique([key[0] for key in self.flt_keys]))
@@ -84,7 +87,7 @@ class DrizzlePSF(object):
                     flt_keys.append(key)
                     
         return flt_keys, wcs, footprint
-    
+            
     @staticmethod
     def _get_wcs_from_beams(beams):
         """
@@ -110,6 +113,47 @@ class DrizzlePSF(object):
             footprint[key] = Polygon(wcs[key].calc_footprint())
             flt_keys.append(key)
                     
+        return flt_keys, wcs, footprint
+    
+    @staticmethod
+    def _get_wcs_from_hdrtab(drz_file):
+        """
+        Read tabulated exposure WCS info from the HDRTAB
+        extension of an AstroDrizzle output file
+        """
+        from shapely.geometry import Polygon, Point
+        drz = pyfits.open(drz_file)
+        if 'HDRTAB' not in drz:
+            print('No HDRTAB extension found in {0}'.format(file))
+            return None
+        
+        hdr = utils.GTable(drz['HDRTAB'].data)
+        wcs = OrderedDict()
+        footprint = OrderedDict()
+        
+        flt_keys = []
+        N = len(hdr)
+        
+        if 'CCDCHIP' in hdr.colnames:
+            ext_key = 'CCDCHIP'
+        else:
+            ext_key = 'EXTNAME'
+            
+        for i in range(N):
+            h = pyfits.Header()
+            for c in hdr.colnames:
+                try:
+                    h[c] = hdr[c][i]
+                except:
+                    pass
+                    
+            key = (h['ROOTNAME'], h[ext_key])
+            flt_keys.append(key)
+            wcs[key] = pywcs.WCS(h, relax=True)
+            wcs[key].pscale = utils.get_wcs_pscale(wcs[key])
+            
+            footprint[key] = Polygon(wcs[key].calc_footprint())
+        
         return flt_keys, wcs, footprint
         
     def get_driz_cutout(self, ra=53.06967306, dec=-27.72333015, size=15, get_cutout=False, N=None):
@@ -146,7 +190,14 @@ class DrizzlePSF(object):
     
     @staticmethod
     def _get_empty_driz(wcs):
-        sh = (wcs._naxis2, wcs._naxis1)
+        if hasattr(wcs, 'pixel_shape'):
+            sh = wcs.pixel_shape[::-1]
+        else:
+            if (not hasattr(wcs, '_naxis1')) & hasattr(wcs, '_naxis'):
+                wcs._naxis1, wcs._naxis2 = wcs._naxis
+                
+            sh = (wcs._naxis2, wcs._naxis1)
+        
         outsci = np.zeros(sh, dtype=np.float32)
         outwht = np.zeros(sh, dtype=np.float32)
         outctx = np.zeros(sh, dtype=np.int32)
@@ -168,6 +219,25 @@ class DrizzlePSF(object):
         out = scipy.optimize.minimize(self.objfun, init, args=(self, ra, dec, wcs_slice, filter, drz_cutout), method='Powell', jac=None, hess=None, hessp=None, bounds=None, constraints=(), tol=1.e-3, callback=None, options=None)
         
         psf = self.get_psf(ra=ra+out.x[0]/3600., dec=dec+out.x[1]/3600., filter=filter, wcs_slice=wcs_slice, verbose=False)
+
+    @staticmethod
+    def objfun_center(params, self, ra, dec, wcs_slice, filter, _Abg, sci, wht, ret):
+        xoff, yoff = params[:2]
+        psf_offset = self.get_psf(ra=ra+xoff/3600./10., dec=dec+yoff/3600./10., filter=filter, wcs_slice=wcs_slice, verbose=False)
+        
+        _A = np.vstack([_Abg, psf_offset[1].data.flatten()])
+        _Ax = _A*np.sqrt(wht.flatten())
+        _y = (sci*np.sqrt(wht)).flatten()
+        
+        _res = np.linalg.lstsq(_Ax.T, _y, rcond=-1)
+        
+        model = _A.T.dot(_res[0]).reshape(sci.shape)
+        chi2 = ((sci-model)**2*wht).sum()
+        print(params, chi2)
+        if ret == 1:
+            return params, _res, model, chi2
+        else:
+            return chi2
         
     @staticmethod
     def objfun(params, self, ra, dec, wcs_slice, filter, drz_cutout):
@@ -184,6 +254,9 @@ class DrizzlePSF(object):
         pix = np.arange(-13,14)
         
         #wcs_slice = self.get_driz_cutout(ra=ra, dec=dec)
+        if wcs_slice is None:
+            wcs_slice = self.driz_wcs.copy()
+        
         outsci, outwht, outctx = self._get_empty_driz(wcs_slice)
         
         count = 1
@@ -222,14 +295,26 @@ class DrizzlePSF(object):
                     
                 N = 13
                 psf_wcs = model.ImageData.get_slice_wcs(self.wcs[key], slice(xyp[0]-N, xyp[0]+N+1), slice(xyp[1]-N, xyp[1]+N+1))
+                
                 psf_wcs.pscale = utils.get_wcs_pscale(self.wcs[key])
                 
-                adrizzle.do_driz(psf, psf_wcs, psf*0+flt_weight, wcs_slice, 
+                try:
+                    adrizzle.do_driz(psf, psf_wcs, psf*0+flt_weight, 
+                                 wcs_slice, 
                                  outsci, outwht, outctx, 1., 'cps', 1,
                                  wcslin_pscale=1., uniqid=1, 
                                  pixfrac=pixfrac, kernel=kernel, fillval=0, 
                                  stepsize=10, wcsmap=None)
-                
+                except:
+                    psf_wcs._naxis1, psf_wcs._naxis2 = psf_wcs._naxis
+                    
+                    adrizzle.do_driz(psf, psf_wcs, psf*0+flt_weight, 
+                                 wcs_slice, 
+                                 outsci, outwht, outctx, 1., 'cps', 1,
+                                 wcslin_pscale=1., uniqid=1, 
+                                 pixfrac=pixfrac, kernel=kernel, fillval=0, 
+                                 stepsize=10, wcsmap=None)
+                    
                 if False:
                     count += 1
                     hdu = pyfits.HDUList([pyfits.PrimaryHDU(), pyfits.ImageHDU(data=psf*100, header=utils.to_header(psf_wcs))])                 
