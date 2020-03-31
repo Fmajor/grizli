@@ -3555,10 +3555,10 @@ def make_combined_mosaics(root, fix_stars=False, mask_spikes=False, skip_single_
         else:
             fill_filter_mosaics(root)
     
-    # Remove the WCS reference files
-    for file in [wcs_ref_optical, wcs_ref_file]:
-        if os.path.exists(file):
-            os.remove(file)
+    # # Remove the WCS reference files          <<200331>> commented out by Xin
+    # for file in [wcs_ref_optical, wcs_ref_file]:
+    #     if os.path.exists(file):
+    #         os.remove(file)
 
 def make_mosaic_footprints(field_root):
     """
