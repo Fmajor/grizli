@@ -2242,9 +2242,13 @@ def load_GroupFLT(field_root='j142724+334246', force_ref=None, force_seg=None, f
                 
         return [grp]
     
-def grism_prep(field_root='j142724+334246', ds9=None, refine_niter=3, gris_ref_filters=GRIS_REF_FILTERS, files=None, split_by_grism=True, refine_poly_order=1, refine_fcontam=0.5, cpu_count=0, mask_mosaic_edges=True, grisms_to_process=None):
+def grism_prep(field_root='j142724+334246', ds9=None, refine_niter=3, gris_ref_filters=GRIS_REF_FILTERS, files=None,
+               split_by_grism=True, refine_poly_order=1, refine_fcontam=0.5, cpu_count=0, mask_mosaic_edges=True,
+               grisms_to_process=None, refine_mag_limits=[18, 24]):
     """
     Contamination model for grism exposures
+    --- Additional Note ---
+    *<<200331>> added keyword `refine_mag_limits` by Xin to allow for changes in refined mag limits.
     """
     import glob
     import os
@@ -2335,7 +2339,7 @@ def grism_prep(field_root='j142724+334246', ds9=None, refine_niter=3, gris_ref_f
             else:
                 refine_i = refine_fcontam
                 
-            grp.refine_list(poly_order=refine_poly_order, mag_limits=[18, 24],
+            grp.refine_list(poly_order=refine_poly_order, mag_limits=refine_mag_limits,     #<<200331>> added by Xin
                             max_coeff=5, ds9=ds9, verbose=True, 
                             fcontam=refine_i)
 

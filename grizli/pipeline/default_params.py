@@ -102,7 +102,7 @@ def write_params_to_yml(kwargs, output_file='grizli.auto_script.yml', verbose=Tr
     if verbose:
         print('\n# Write parameters to {0}\n'.format(output_file))
         
-def get_yml_parameters(default_yml='auto_script_defaults.yml', local_file=None, copy_defaults=False, verbose=True,
+def get_yml_parameters(default_yml='auto_script_xin.yml', local_file=None, copy_defaults=False, verbose=True,
                        skip_unknown_parameters=True):
     """
     Read default parameters from the YAML file in `grizli/data`
@@ -114,6 +114,7 @@ def get_yml_parameters(default_yml='auto_script_defaults.yml', local_file=None, 
 
     --- Additional Note ---
     *<<200127>> Xin added kw of `default_yml`
+    *<<200331>> Xin switched `default_yml` from 'auto_script_defaults.yml' to 'auto_script_xin.yml' to include grism_prep_args['refine_mag_limits']
     """
     import yaml
     import shutil

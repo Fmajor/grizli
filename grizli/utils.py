@@ -4744,8 +4744,8 @@ def symlink_templates(force=False):
         filename = os.path.basename(file)
         out_file = os.path.join(out_path, filename)
         #print(filename, out_file)
-        if (not os.path.exists(out_file)) | force:
-            if os.path.exists(out_file): # (force)
+        if (not os.path.lexists(out_file)) | force:
+            if os.path.lexists(out_file): # (force)     #<<200331>> Xin changed `os.path.exists` to `os.path.lexists`
                 os.remove(out_file)
                 
             os.symlink(file, out_file)
