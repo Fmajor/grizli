@@ -28,6 +28,9 @@ IGM_MINZ = 3.4 # blue edge of G800L
 # Default parameters for drizzled line map
 PLINE = {'kernel': 'point', 'pixfrac': 0.2, 'pixscale': 0.1, 'size': 8, 'wcs': None}
 
+# Default parameters for drizzled grism 2D spectral stacks, added by Xin <<200414>>
+PSPEC2 = {'kernel': 'square', 'pixfrac': 0.6, 'NY': 50, 'spatial_scale':0.5, 'diff':True}
+
 # Default arguments for optional bounded least-squares fits
 BOUNDED_DEFAULTS = {'method':'bvls', 'tol':1.e-8, 'verbose':0}
 LINE_BOUNDS = [-1.e-16, 1.e-13] # erg/s/cm2
@@ -78,7 +81,16 @@ def run_all_parallel(id, get_output_data=False, args_file='fit_args.npy', **kwar
     
     return id, status, t1-t0
         
-def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter=['nnls','bounded'], group_name='grism', fit_stacks=True, only_stacks=False, prior=None, fcontam=0.2, pline=PLINE, min_line_sn=4, mask_sn_limit=np.inf, fit_only_beams=False, fit_beams=True, root='*', fit_trace_shift=False, phot=None, use_phot_obj=True, phot_obj=None, verbose=True, scale_photometry=False, show_beams=True, scale_on_stacked_1d=True, use_cached_templates=True, loglam_1d=True, overlap_threshold=5, MW_EBV=0., sys_err=0.03, huber_delta=4, get_student_logpdf=False, get_dict=False, bad_pa_threshold=1.6, units1d='flam', redshift_only=False, line_size=1.6, use_psf=False, get_line_width=False, sed_args={'bin':1, 'xlim':[0.3, 9]}, get_ir_psfs=True, min_mask=0.01, min_sens=0.02, mask_resid=True, save_stack=True,  get_line_deviations=True, bounded_kwargs=BOUNDED_DEFAULTS, write_fits_files=True, save_figures=True, fig_type='png', **kwargs):
+def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002], fitter=['nnls','bounded'], group_name='grism',
+            fit_stacks=True, only_stacks=False, prior=None, fcontam=0.2, pline=PLINE, min_line_sn=4, mask_sn_limit=np.inf,
+            fit_only_beams=False, fit_beams=True, root='*', fit_trace_shift=False, phot=None, use_phot_obj=True, phot_obj=None, verbose=True,
+            scale_photometry=False, show_beams=True, scale_on_stacked_1d=True, use_cached_templates=True, loglam_1d=True,
+            overlap_threshold=5, MW_EBV=0., sys_err=0.03, huber_delta=4, get_student_logpdf=False, get_dict=False, bad_pa_threshold=1.6, units1d='flam',
+            redshift_only=False, line_size=1.6, use_psf=False, get_line_width=False, sed_args={'bin':1, 'xlim':[0.3, 9]}, get_ir_psfs=True,
+            min_mask=0.01, min_sens=0.02, mask_resid=True, save_stack=True,  get_line_deviations=True,
+            bounded_kwargs=BOUNDED_DEFAULTS, write_fits_files=True, save_figures=True, fig_type='png',
+            pspec2=PSPEC2,  #<<200414>> added by Xin
+            **kwargs):
     """Run the full procedure
     
     1) Load MultiBeam and stack files 
@@ -529,11 +541,15 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
     # 1D spectrum
     oned_hdul = mb.oned_spectrum_to_hdu(tfit=tfit, bin=1, outputfile='{0}_{1:05d}.1D.fits'.format(group_name, id), loglam=loglam_1d)#, units=units1d)
     oned_hdul[0].header['GRIZLIV'] = (grizli__version, 'Grizli version')
-    
+
+    #<<200414>> modified by Xin to allow changes in stack.fits
     if save_stack:
-        hdu, fig = mb.drizzle_grisms_and_PAs(fcontam=fcontam, flambda=False, 
-                                             kernel='point', size=32, 
-                                             zfit=tfit, diff=False)
+        hdu, fig = mb.drizzle_grisms_and_PAs(fcontam=fcontam, flambda=False,
+                                             kernel=pspec2['kernel'], pixfrac=pspec2['pixfrac'], size=pspec2['NY'], scale=pspec2['spatial_scale'],
+                                             zfit=tfit, diff=pspec2['diff'])
+        # hdu, fig = mb.drizzle_grisms_and_PAs(fcontam=fcontam, flambda=False,
+        #                                      kernel='point', size=32,
+        #                                      zfit=tfit, diff=False)
 
         hdu[0].header['GRIZLIV'] = (grizli__version, 'Grizli version')
                                              
@@ -567,14 +583,15 @@ def run_all(id, t0=None, t1=None, fwhm=1200, zr=[0.65, 1.6], dz=[0.004, 0.0002],
         if save_figures:
             fig.savefig('{0}_{1:05d}.line.{2}'.format(group_name, id, 
                         fig_type))
-    
-    if phot is not None:
-        out = mb, st, fit, tfit, line_hdu
-        if 'pz' in phot:
-            full_sed_plot(mb, tfit, zfit=fit, photometry_pz=phot['pz'],
-                          save=fig_type, **sed_args)
-        else:
-            full_sed_plot(mb, tfit, zfit=fit, save=fig_type, **sed_args)
+
+    #<<200415>> commented off by Xin; prospect smoothing does not quite work
+    # if phot is not None:
+    #     out = mb, st, fit, tfit, line_hdu
+    #     if 'pz' in phot:
+    #         full_sed_plot(mb, tfit, zfit=fit, photometry_pz=phot['pz'],
+    #                       save=fig_type, **sed_args)
+    #     else:
+    #         full_sed_plot(mb, tfit, zfit=fit, save=fig_type, **sed_args)
         
     return mb, st, fit, tfit, line_hdu
 
@@ -3015,7 +3032,9 @@ class GroupFitter(object):
         # 
         #     return fig, sfit
     
-    def oned_figure(self, bin=1, wave=None, show_beams=True, minor=0.1, tfit=None, show_rest=False, axc=None, figsize=[6,4], fill=False, units='flam', min_sens_show=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False, apply_beam_mask=True, loglam_1d=True, trace_limits=None, show_contam=False, beam_models=None):
+    def oned_figure(self, bin=1, wave=None, show_beams=True, minor=0.1, tfit=None, show_rest=False, axc=None, figsize=[6,4],
+                    fill=False, units='flam', min_sens_show=0.1, ylim_percentile=2, scale_on_stacked=False, show_individual_templates=False,
+                    apply_beam_mask=True, loglam_1d=True, trace_limits=None, show_contam=False, beam_models=None):
         """
         1D figure
         1D figure
@@ -3047,7 +3066,7 @@ class GroupFitter(object):
         -------
         fig : type
         
-        
+
         """
         import matplotlib.pyplot as plt
         from scipy.interpolate import UnivariateSpline
@@ -3170,7 +3189,7 @@ class GroupFitter(object):
                 grism = beam.grism
                 clean = beam.sci - beam.contam
                 if tfit is not None:
-                    clean -= - tfit['cfit']['bg {0:03d}'.format(i)][0]
+                    clean -= tfit['cfit']['bg {0:03d}'.format(i)][0]    #<<200416>> fixed typo by Xin
                 
                 if m_i is not None:
                     w, flm, erm = beam.optimal_extract(m_i, bin=bin, ivar=beam.ivar*b_mask)
@@ -3428,7 +3447,7 @@ class GroupFitter(object):
             axc.text(0.95, 0.95, '{0}  {1:>5d}'.format(self.group_name, self.id), ha='right', va='top', transform=axc.transAxes)
             fig.tight_layout(pad=0.2)
             return fig
-        
+
         else:
             return True
             

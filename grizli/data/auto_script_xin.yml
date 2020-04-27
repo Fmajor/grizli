@@ -256,7 +256,7 @@ extract_args:
     oned_R: 30
     bad_pa_threshold: null
     fit_trace_shift: False
-    size: 32
+    size: 40
     diff: True
     MW_EBV: 0.0
     skip_complete: True
