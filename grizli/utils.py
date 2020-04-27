@@ -3444,12 +3444,15 @@ def log_zgrid(zr=[0.7,3.4], dz=0.01):
     zgrid = np.exp(np.arange(np.log(1+zr[0]), np.log(1+zr[1]), dz))-1
     return zgrid
 
-def get_wcs_pscale(wcs):
+def get_wcs_pscale(wcs, set_attribute=True):
     """Get correct pscale from a `~astropy.wcs.WCS` object
     
     Parameters
     ----------
     wcs : `~astropy.wcs.WCS` or `~astropy.io.fits.Header`
+    
+    set_attribute : bool
+        Set the `pscale` attribute on `wcs`, along with returning the value.
         
     Returns
     -------
@@ -3468,6 +3471,8 @@ def get_wcs_pscale(wcs):
         det = linalg.det(wcs.wcs.pc)
         
     pscale = np.sqrt(np.abs(det))*3600.
+    wcs.pscale = pscale
+    
     return pscale
     
 def transform_wcs(in_wcs, translation=[0.,0.], rotation=0., scale=1.):
@@ -4059,13 +4064,13 @@ def make_wcsheader(ra=40.07293, dec=-1.6137748, size=2, pixscale=0.1, get_hdu=Fa
         cdelt = [pixscale[0]/3600., pixscale[1]/3600.]
         
     if np.isscalar(size):
-        npix = np.cast[int]([size/pixscale, size/pixscale])
+        npix = np.cast[int](np.round([size/pixscale, size/pixscale]))
     else:
-        npix = np.cast[int]([size[0]/pixscale, size[1]/pixscale])
+        npix = np.cast[int](np.round([size[0]/pixscale, size[1]/pixscale]))
         
     hout = pyfits.Header()
-    hout['CRPIX1'] = npix[0]//2
-    hout['CRPIX2'] = npix[1]//2
+    hout['CRPIX1'] = npix[0]/2
+    hout['CRPIX2'] = npix[1]/2
     hout['CRVAL1'] = ra
     hout['CRVAL2'] = dec
     hout['CD1_1'] = -cdelt[0]
