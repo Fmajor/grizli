@@ -1672,12 +1672,13 @@ class GrismFLT(object):
             direct_filter = self.grism.pupil
         else:
             direct_filter = self.direct.filter
-        
-        self.conf_file = grismconf.get_config_filename(self.grism.instrument,
-                                                       self.grism.filter,
-                                                       direct_filter,
-                                                       sci_extn)
-        # swapped the sequence of 'self.grism.filter' and 'direct_filter' for NIRISS simulation by Xin Wang <<190818>>
+
+        #<<200428>> added explicit options for JWST/NIRISS and HST/WFC3
+        if self.grism.instrument == 'NIRISS':
+            self.conf_file = grismconf.get_config_filename(self.grism.instrument, self.grism.filter, direct_filter, sci_extn)
+            # swapped the sequence of 'self.grism.filter' and 'direct_filter' for NIRISS simulation by Xin Wang <<190818>>
+        else:
+            self.conf_file = grismconf.get_config_filename(self.grism.instrument, direct_filter, self.grism.filter, sci_extn)
 
         self.conf = grismconf.load_grism_config(self.conf_file)
         
@@ -2826,10 +2827,12 @@ class BeamCutout(object):
             direct_filter = self.direct.filter
             
         if conf is None:
-            conf_file = grismconf.get_config_filename(self.direct.instrument,
-                                                      self.grism.filter,
-                                                      direct_filter)
-            # swapped the sequence of 'self.grism.filter' and 'direct_filter' for NIRISS simulation by Xin Wang <<190818>>
+            #<<200428>> added explicit options for JWST/NIRISS and HST/WFC3
+            if self.direct.instrument == 'NIRISS':
+                conf_file = grismconf.get_config_filename(self.direct.instrument, self.grism.filter, direct_filter)
+                # swapped the sequence of 'self.grism.filter' and 'direct_filter' for NIRISS simulation by Xin Wang <<190818>>
+            else:
+                conf_file = grismconf.get_config_filename(self.direct.instrument, direct_filter, self.grism.filter)
         
             conf = grismconf.load_grism_config(conf_file)
         
