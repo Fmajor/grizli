@@ -51,6 +51,7 @@ grism_limits = {'G800L':[0.545, 1.02, 50.], # ACS/WFC
            'CLEARP':[0.76, 2.3,45.0]}
 
 default_line_list = ['SIII', 'SII', 'Ha', 'OI-6302', 'OIII', 'Hb', 'OIII-4363', 'Hg', 'Hd', 'NeIII', 'OII', 'MgII','Lya']
+default_line_list.pop(default_line_list.index('OIII-4363'))     #<<200429>> added by XW
 
 def test():
     
@@ -1246,6 +1247,7 @@ class MultiBeam():
         Ax *= np.sqrt(self.ivarf[self.fit_mask][:, np.newaxis])
         try:
             covar = np.matrix(np.dot(Ax.T, Ax)).I
+            covar = np.asarray(covar)   #<<200429>> added by XW
             covard = np.sqrt(covar.diagonal())
         except:
             covard = np.zeros(ok_temp.sum())#-1.
@@ -1886,10 +1888,12 @@ class MultiBeam():
         wfull = {}
         ffull = {}
         efull = {}
+        mfull = {}
         for grism in grisms:
             wfull[grism] = []
             ffull[grism] = []
             efull[grism] = []
+            mfull[grism] = []
         
         for ib in range(self.N):
             beam = self.beams[ib]
@@ -1961,12 +1965,14 @@ class MultiBeam():
             wfull[grism] = np.append(wfull[grism], wave[okerr])
             ffull[grism] = np.append(ffull[grism], flux[okerr])
             efull[grism] = np.append(efull[grism], err[okerr])
+            mfull[grism] = np.append(mfull[grism], mflux[okerr])
                 
         if return_1Dextraction:
             print(' -   >   >   updating fit_data with 1D optimal extraction')
             fit_data['wfull'] = wfull
             fit_data['ffull'] = ffull
             fit_data['efull'] = efull
+            fit_data['mfull'] = mfull
             fit_data['plot_flambda'] = plot_flambda
 
         for grism in grisms:                        
