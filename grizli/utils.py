@@ -1570,9 +1570,9 @@ def get_line_wavelengths():
     line_wavelengths['OII'] = [3727.092, 3729.875]
     line_ratios['OII'] = [1, 1.] 
     
-    line_wavelengths['OI-6302'] = [6302.046, 6363.67]
+    line_wavelengths['OI-6302'] = [6302.046, 6365.535]
     line_ratios['OI-6302'] = [1, 0.33]
-    line_wavelengths['OI-5578'] = [5578.6]
+    line_wavelengths['OI-5578'] = [5578.89]
     line_ratios['OI-5578'] = [1]
     
     # Auroral OII
@@ -1581,25 +1581,25 @@ def get_line_wavelengths():
     line_ratios['OII-7325'] = [1.2, 1.] 
     
     # Weak Ar III in SF galaxies
-    line_wavelengths['ArIII-7138'] = [7138.0]
+    line_wavelengths['ArIII-7138'] = [7137.77]
     line_ratios['ArIII-7138'] = [1.] 
     
     line_wavelengths['NeIII-3867'] = [3869.87]
     line_ratios['NeIII-3867'] = [1.]
-    line_wavelengths['NeIII-3968'] = [3968.16]
+    line_wavelengths['NeIII-3968'] = [3968.59]
     line_ratios['NeIII-3968'] = [1.]
-    line_wavelengths['NeV-3346'] = [3346.8]
+    line_wavelengths['NeV-3346'] = [3343.5]
     line_ratios['NeV-3346'] = [1.]
     line_wavelengths['NeVI-3426'] = [3426.85]
     line_ratios['NeVI-3426'] = [1.]
     
-    line_wavelengths['SIII'] = [9068.6, 9530.6][::-1]
+    line_wavelengths['SIII'] = [9071.1, 9533.2][::-1]
     line_ratios['SIII'] = [1, 2.44][::-1]
     
     # Split doublet, if needed
-    line_wavelengths['SIII-9068'] = [9068.6]
+    line_wavelengths['SIII-9068'] = [9071.1]
     line_ratios['SIII-9068'] = [1]
-    line_wavelengths['SIII-9531'] = [9530.6]
+    line_wavelengths['SIII-9531'] = [9533.2]
     line_ratios['SIII-9531'] = [1]
     
     line_wavelengths['SII'] = [6718.29, 6732.67]
@@ -1621,12 +1621,12 @@ def get_line_wavelengths():
     line_ratios['HeII-4687'] = [1.]
     line_wavelengths['HeII-5412'] = [5412.5]
     line_ratios['HeII-5412'] = [1.]
-    line_wavelengths['HeI-5877'] = [5877.2]
+    line_wavelengths['HeI-5877'] = [5877.249]
     line_ratios['HeI-5877'] = [1.]
-    line_wavelengths['HeI-3889'] = [3889.5]
+    line_wavelengths['HeI-3889'] = [3889.75]
     line_ratios['HeI-3889'] = [1.]
-    line_wavelengths['HeI-1083'] = [10833.2]
-    line_ratios['HeI-1083'] = [1.]
+    line_wavelengths['HeI-1083'] = [10832.057, 10833.306]
+    line_ratios['HeI-1083'] = [1., 1.]
     
     # Osterbrock Table 4.5
     # -> N=4
@@ -1656,6 +1656,12 @@ def get_line_wavelengths():
     
     line_wavelengths['NII'] = [6549.86, 6585.27]
     line_ratios['NII'] = [1., 3]
+    
+    line_wavelengths['NII-6549'] = [6549.86]
+    line_ratios['NII-6549'] = [1.]
+    line_wavelengths['NII-6584'] = [6585.27]
+    line_ratios['NII-6584'] = [1.]
+    
     line_wavelengths['NIII-1750'] = [1750.]
     line_ratios['NIII-1750'] = [1.]
     line_wavelengths['NIV-1487'] = [1487.]
@@ -4835,7 +4841,7 @@ def fetch_acs_wcs_files(beams_file, bucket_name='grizli-v1'):
         
     im.close()
     
-def fetch_hst_calib(file='iref$uc72113oi_pfl.fits',  ftpdir='https://hst-crds.stsci.edu/unchecked_get/references/hst/', verbose=True):
+def fetch_hst_calib(file='iref$uc72113oi_pfl.fits',  ftpdir='https://hst-crds.stsci.edu/unchecked_get/references/hst/', verbose=True, remove_corrupt=True):
     """
     TBD
     """
@@ -4846,6 +4852,18 @@ def fetch_hst_calib(file='iref$uc72113oi_pfl.fits',  ftpdir='https://hst-crds.st
     iref_file = os.path.join(os.getenv(ref_dir), cimg)
     if not os.path.exists(iref_file):
         os.system('curl -o {0} {1}/{2}'.format(iref_file, ftpdir, cimg))
+        if 'fits' in iref_file:
+            try:
+                pyfits.open(iref_file)
+            except:
+                msg = ('Downloaded file {0} appears to be corrupt.\n'
+                       'Check that {1}/{2} exists and is a valid file')
+                   
+                print(msg.format(iref_file, ftpdir, cimg))
+                if remove_corrupt:
+                    os.remove(iref_file)
+                
+                return False
     else:
         if verbose:
             print('{0} exists'.format(iref_file))
@@ -4891,6 +4909,25 @@ def fetch_hst_calibs(flt_file, ftpdir='https://hst-crds.stsci.edu/unchecked_get/
         calib_paths.append(path)
         
     return calib_paths
+
+def mast_query_from_file_list(files=[], os_open=True):
+    """
+    Generate a MAST query on datasets in a list.  
+    """
+    if len(files) == 0:
+        files = glob.glob('*raw.fits')
+    
+    if len(files) == 0:
+        print('No `files` specified.')
+        return False
+        
+    datasets = np.unique([file[:6]+'*' for file in files]).tolist()
+    URL = "http://archive.stsci.edu/hst/search.php?action=Search&"
+    URL += "sci_data_set_name="+','.join(datasets)
+    if os_open:
+        os.system('open "{0}"'.format(URL))
+    
+    return URL
     
 def fetch_default_calibs(ACS=False):
     
@@ -6853,7 +6890,8 @@ def log_exception(LOGFILE, traceback, verbose=True, mode='a'):
     import time
     
     trace = traceback.format_exc(limit=2)
-    log = '\n########################################## \n# ! Exception ({0})\n'.format(time.ctime())
+    log = '\n########################################## \n'
+    log += '# ! Exception ({0})\n'.format(time.ctime())
     log += '#\n# !'+'\n# !'.join(trace.split('\n'))
     log += '\n######################################### \n\n'
     if verbose | (LOGFILE is None):
