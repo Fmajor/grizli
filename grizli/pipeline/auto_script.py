@@ -1344,7 +1344,11 @@ def clean_prep(field_root='j142724+334246'):
     # for flt_file in flt_files:
     #     utils.fix_flt_nan(flt_file, verbose=True)
             
-def preprocess(field_root='j142724+334246', HOME_PATH='/Volumes/Pegasus/Grizli/Automatic/', min_overlap=0.2, make_combined=True, catalogs=['PS1','DES','NSC','SDSS','GAIA','WISE'], use_visit=True, master_radec=None, parent_radec=None, use_first_radec=False, skip_imaging=False, clean=True, skip_single_optical_visits=True, visit_prep_args=args['visit_prep_args'], persistence_args=args['persistence_args']):
+def preprocess(field_root='j142724+334246', min_overlap=0.2, master_radec=None, parent_radec=None, use_first_radec=False,
+               skip_imaging=False, clean=True, skip_single_optical_visits=True,
+               visit_prep_args=args['visit_prep_args'], persistence_args=args['persistence_args'],
+               HOME_PATH='/Volumes/Pegasus/Grizli/Automatic/',
+               make_combined=True, catalogs=['PS1','DES','NSC','SDSS','GAIA','WISE'], use_visit=True):
     """
     master_radec: force use this radec file
     
