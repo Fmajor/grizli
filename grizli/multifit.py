@@ -16,6 +16,7 @@ import astropy.io.fits as pyfits
 import astropy.wcs as pywcs
 
 import astropy.units as u
+from astropy.visualization import ZScaleInterval
 
 ## local imports
 from . import utils
@@ -1692,7 +1693,13 @@ class MultiBeam(GroupFitter):
             hdu[0].header['FILE{0:04d}'.format(ib)] = (beam.grism.parent_file, 'Grism parent file')
             hdu[0].header['GRIS{0:04d}'.format(ib)] = (beam.grism.filter, 'Grism element')
             hdu[0].header['NEXT{0:04d}'.format(ib)] = (count[-1], 'Number of extensions')
-            
+            pas = self.PA[beam.grism.filter]
+            for pa in pas:
+                if ib in pas[pa]:
+                    hdu[0].header['PA{0:04d}'.format(ib)] = (pa, 'PA')
+                    break
+            else:
+                hdu[0].header['PA{0:04d}'.format(ib)] = (-1, 'PA')
             try:
                 exptime[beam.grism.filter] += beam.grism.header['EXPTIME']
             except:
@@ -5406,3 +5413,71 @@ def show_drizzle_HDU_Jin(hdu, diff=True, mask_segmentation=True):
             
     gs.tight_layout(fig, pad=0)
     return fig, out_axies
+
+def plot_all_beams_Jin(filename):
+    from matplotlib.gridspec import GridSpec
+    # filename = 'j071732p3745_00361.beams.fits'
+    z = ZScaleInterval()
+    outfile = filename[:-5]+'.png'
+    obj = pyfits.open(filename)
+    count = obj[0].header['COUNT']
+    #beams_dir = filename[:-5]
+    #os.makedirs(beams_dir, exist_ok=True)
+
+    NX = 1
+    NY = count
+    widths = []
+    for i in range(NX):
+        widths.extend([0.2, 0.2, 0.2, 1, 1])
+    gs = GridSpec(NY, NX*5, height_ratios=[1]*NY, width_ratios=widths)
+    groups = {}
+    fig = plt.figure(figsize=(13*NX, 1*NY))
+
+    for i in range(count):
+        flt_file_name = obj[0].header['FILE{:04d}'.format(i)]
+        grism_name = obj[0].header['GRIS{:04d}'.format(i)]
+        pa = obj[0].header['PA{:04d}'.format(i)]
+        if grism_name not in groups:
+            groups[grism_name] = []
+        fname = "{}\n{}\n{:04d}\n{}".format(grism_name, pa, i, flt_file_name.split('_')[0])
+        i_ref = obj[i*7+1]
+        i_seg = obj[i*7+2]
+        s_sci = obj[i*7+3]
+        s_con = obj[i*7+6]
+
+        groups[grism_name].append([i_ref, i_seg, s_sci, s_con, fname, pa])
+    for grism in groups:
+        groups[grism].sort(key=lambda _:_[-1])
+
+    c = -1
+    for grism in groups:
+        for each in groups[grism]:
+            c += 1
+            i_ref, i_seg, s_sci, s_con, fname, pa = each
+
+            ax = fig.add_subplot(gs[c, 0])
+            ax.text(-0.8, -0.8, fname)
+            ax.set_xticklabels([]); ax.set_yticklabels([])
+            ax.xaxis.set_tick_params(length=0)
+            ax.yaxis.set_tick_params(length=0)
+            ax.set_xlim([-1,1])
+            ax.set_ylim([-1,1])
+
+            for j, todo in enumerate([i_ref, i_seg, s_sci, s_con]):
+                ax = fig.add_subplot(gs[c, j+1])
+                sh = todo.data.shape
+                extent = [0, sh[1], 0, sh[0]]
+                if j==1:
+                    vmin = todo.data.min()
+                    vmax = todo.data.max()
+                else:
+                    vmin,vmax = z.get_limits(todo.data)
+                ax.imshow(todo.data, origin='lower', interpolation='Nearest',
+                        vmin=vmin, vmax=vmax, cmap=plt.cm.viridis_r,
+                        extent=extent, aspect='auto')
+                ax.set_xticklabels([]); ax.set_yticklabels([])
+                ax.xaxis.set_tick_params(length=0)
+                ax.yaxis.set_tick_params(length=0)
+    gs.tight_layout(fig, pad=0)
+    fig.savefig(outfile)
+    plt.close(fig)
