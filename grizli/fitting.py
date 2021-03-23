@@ -3286,7 +3286,8 @@ class GroupFitter(object):
         
         # Cleanup
         axc.set_xlim(wmin/zp1, wmax/zp1)
-        axc.semilogx(subsx=[wmax])
+        if loglam_1d:
+            axc.semilogx(subsx=[wmax])
         #axc.set_xticklabels([])
         axc.set_xlabel(xlabel)
         axc.set_ylabel(unit_label)

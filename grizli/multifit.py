@@ -3625,7 +3625,7 @@ class MultiBeam(GroupFitter):
         
         return chi2/self.DoF    
     
-    def drizzle_grisms_and_PAs(self, size=10, fcontam=0, flambda=False, scale=1, pixfrac=0.5, kernel='square', make_figure=True, usewcs=False, zfit=None, diff=True, grism_list=['G800L','G102','G141','F090W','F115W','F150W','F200W','F356W','F410M','F444W'], mask_segmentation=True):
+    def drizzle_grisms_and_PAs(self, size=10, fcontam=0, flambda=False, scale=1, pixfrac=0.5, kernel='square', make_figure=True, usewcs=False, zfit=None, diff=True, grism_list=['G800L','G102','G141','F090W','F115W','F150W','F200W','F356W','F410M','F444W'], mask_segmentation=True, onedtwod=False):
         """Make figure showing spectra at different orients/grisms
         
         TBD
@@ -3928,7 +3928,12 @@ class MultiBeam(GroupFitter):
             
         if make_figure:
             fig = show_drizzle_HDU(output_hdu, diff=diff)
-            return output_hdu, fig
+            if onedtwod:
+                tfig,out_axies = show_drizzle_HDU_Jin(output_hdu, diff=diff)
+                return output_hdu, fig, tfig, out_axies
+            else:
+                return output_hdu, fig
+
         else:
             return output_hdu #all_hdus
     
@@ -5246,3 +5251,158 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     hdul = pyfits.HDUList([p, grism_sci, grism_wht, direct_sci])
     
     return hdul
+
+def show_drizzle_HDU_Jin(hdu, diff=True, mask_segmentation=True):
+    """Make a figure from the multiple extensions in the drizzled grism file.
+    
+    Parameters
+    ----------
+    hdu : `~astropy.io.fits.HDUList`
+        HDU list output by `drizzle_grisms_and_PAs`.
+    
+    diff : bool
+        If True, then plot the stacked spectrum minus the model.
+        
+    Returns
+    -------
+    fig : `~matplotlib.figure.Figure`
+        The figure.
+
+    """
+    from collections import OrderedDict
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.ticker import MultipleLocator
+    
+    h0 = hdu[0].header
+    NX = h0['NGRISM']
+    NY = 0
+    
+    grisms = OrderedDict()
+    
+    for ig in range(NX):
+        g = h0['GRISM{0:03d}'.format(ig+1)]
+        NY = np.maximum(NY, h0['N'+g])
+        grisms[g] = h0['N'+g]
+        
+    NY += 1
+        
+    fig = plt.figure(figsize=(5*NX, 1*NY+3))
+    
+    widths = []
+    for i in range(NX):
+        widths.extend([0.2, 1])
+        
+    gs = GridSpec(NY+1, NX*2, height_ratios=[1]*NY+[3], width_ratios=widths)
+    out_axies = OrderedDict()
+
+    for ig, g in enumerate(grisms):
+        sci_i = hdu['SCI',g]
+        wht_i = hdu['WHT',g]
+        model_i = hdu['MODEL',g]
+        kern_i = hdu['KERNEL',g]
+        h_i = sci_i.header
+        out_axies[g] = {
+            'WMIN': h_i['WMIN'], 
+            'WMAX': h_i['WMAX'],
+            'ax': fig.add_subplot(gs[NY, ig*2+1]),
+            'xlabel': r'$\lambda$ ($\mu$m) - '+g,
+        }
+        #xx = np.linspace(out_axies[g]['WMIN'], out_axies[g]['WMAX'], 1000)
+        #out_axies[g]['ax'].plot(xx, [100]*len(xx))
+        out_axies[g]['ax'].set_xlim([out_axies[g]['WMIN'], out_axies[g]['WMAX']])
+        out_axies[g]['ax'].get_yaxis().set_visible(False)
+        out_axies[g]['ax'].set_yticklabels([])
+        out_axies[g]['ax'].set_xlabel(r'$\lambda$ ($\mu$m) - '+g)
+        out_axies[g]['ax'].xaxis.set_major_locator(MultipleLocator(GRISM_MAJOR[g]))
+        
+        clip = wht_i.data > 0 
+        if clip.sum() == 0:
+            clip = np.isfinite(wht_i.data)
+        
+        avg_rms = 1/np.median(np.sqrt(wht_i.data[clip]))
+        vmax = np.maximum(1.1*np.percentile(sci_i.data[clip],98),
+                         5*avg_rms)
+        
+        vmax_kern = 1.1*np.percentile(kern_i.data,99.5)
+        
+        # Kernel
+        ax = fig.add_subplot(gs[NY-1, ig*2+0])
+        sh = kern_i.data.shape
+        extent = [0, sh[1], 0, sh[0]]
+        
+        ax.imshow(kern_i.data, origin='lower', interpolation='Nearest', 
+                  vmin=-0.1*vmax_kern, vmax=vmax_kern, cmap=plt.cm.viridis_r,
+                  extent=extent, aspect='auto')
+        
+        ax.set_xticklabels([]); ax.set_yticklabels([])
+        ax.xaxis.set_tick_params(length=0)
+        ax.yaxis.set_tick_params(length=0)
+        
+        # Spectrum
+        sh = sci_i.data.shape
+        extent = [h_i['WMIN'], h_i['WMAX'], 0, sh[0]]
+        
+        ax = fig.add_subplot(gs[NY-1, ig*2+1])
+        
+        if diff:
+            #print('xx DIFF!')
+            m = model_i.data
+        else:
+            m = 0
+            
+        ax.imshow(sci_i.data-m, origin='lower',
+                  interpolation='Nearest', vmin=-0.1*vmax, vmax=vmax, 
+                  extent=extent, cmap = plt.cm.viridis_r, 
+                  aspect='auto')
+        
+        ax.set_xticklabels([]); ax.set_yticklabels([])
+        ax.xaxis.set_tick_params(length=0)
+        ax.yaxis.set_tick_params(length=0)
+        
+        for ip in range(grisms[g]):
+            #print(ip, ig)
+            pa = h0['{0}{1:02d}'.format(g, ip+1)]
+
+            sci_i = hdu['SCI','{0},{1}'.format(g, pa)]
+            wht_i = hdu['WHT','{0},{1}'.format(g, pa)]
+            kern_i = hdu['KERNEL','{0},{1}'.format(g, pa)]
+            h_i = sci_i.header
+
+            # Kernel
+            ax = fig.add_subplot(gs[ip, ig*2+0])
+            sh = kern_i.data.shape
+            extent = [0, sh[1], 0, sh[0]]
+            
+            ax.imshow(kern_i.data, origin='lower', interpolation='Nearest', 
+                      vmin=-0.1*vmax_kern, vmax=vmax_kern, extent=extent,
+                      cmap=plt.cm.viridis_r, aspect='auto')
+
+            ax.set_xticklabels([]); ax.set_yticklabels([])
+            ax.xaxis.set_tick_params(length=0)
+            ax.yaxis.set_tick_params(length=0)
+            
+            # Spectrum
+            sh = sci_i.data.shape
+            extent = [h_i['WMIN'], h_i['WMAX'], 0, sh[0]]
+
+            ax = fig.add_subplot(gs[ip, ig*2+1])
+
+            ax.imshow(sci_i.data, origin='lower',
+                      interpolation='Nearest', vmin=-0.1*vmax, vmax=vmax, 
+                      extent=extent, cmap = plt.cm.viridis_r, 
+                      aspect='auto')
+           
+            ax.set_yticklabels([]); ax.set_xticklabels([])
+            ax.xaxis.set_major_locator(MultipleLocator(GRISM_MAJOR[g]))
+            ax.text(0.015, 0.94, '{0:3.0f}'.format(pa), ha='left',
+                    va='top',
+                    transform=ax.transAxes, fontsize=8, 
+                    backgroundcolor='w')
+            
+            if (ig == (NX-1)) & (ip == 0):
+                ax.text(0.98, 0.94, 'ID = {0}'.format(h0['ID']), 
+                        ha='right', va='top', transform=ax.transAxes,
+                        fontsize=8, backgroundcolor='w')
+            
+    gs.tight_layout(fig, pad=0)
+    return fig, out_axies

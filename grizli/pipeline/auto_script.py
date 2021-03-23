@@ -2612,8 +2612,14 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
         except:
             continue
 
-        hdu, fig = mb.drizzle_grisms_and_PAs(fcontam=0.5, flambda=False, kernel='point', size=32, zfit=tfit, diff=diff)
+        hdu, fig, tfig, axies_out = mb.drizzle_grisms_and_PAs(fcontam=0.5, flambda=False, kernel='point', size=32, zfit=tfit, diff=diff, onedtwod=True)
+        for filter in axies_out:
+            ax = axies_out[filter]['ax']
+            mb.oned_figure(axc=ax, tfit=tfit, show_beams=show_beams, scale_on_stacked=True, ylim_percentile=5, loglam_1d=False)
+            ax.set_xlim([axies_out[filter]['WMIN'], axies_out[filter]['WMAX']])
+            ax.set_xlabel(axies_out[filter]['xlabel'])
         fig.savefig('{0}_{1:05d}.stack.png'.format(target, id))
+        tfig.savefig('{0}_{1:05d}.stack1d2d.png'.format(target, id), dpi=400)
 
         hdu.writeto('{0}_{1:05d}.stack.fits'.format(target, id), 
                     overwrite=True)
