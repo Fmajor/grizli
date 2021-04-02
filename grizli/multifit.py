@@ -691,6 +691,87 @@ class GroupFLT():
             
         return out_beams
     
+    def get_all_beams(self, id, size=10, center_rd=None, beam_id='A',
+                  min_overlap=0.1, min_valid_pix=10, min_mask=0.01, 
+                  min_sens=0.08, mask_resid=True, get_slice_header=True):
+        """Extract 2D spectra "beams" from the GroupFLT exposures.
+        
+        Parameters
+        ----------
+        id : int
+            Catalog ID of the object to extract.
+            
+        size : int
+            Half-size of the 2D spectrum to extract, along cross-dispersion
+            axis.
+            
+        center_rd : optional, (float, float)
+            Extract based on RA/Dec rather than catalog ID.
+            
+        beam_id : type
+            Name of the order to extract.  
+            
+        min_overlap : float
+            Fraction of the spectrum along wavelength axis that has one 
+            or more valid pixels.
+            
+        min_valid_pix : int
+            Minimum number of valid pixels (`beam.fit_mask == True`) in 2D
+            spectrum.
+        
+        min_mask : float
+            Minimum factor relative to the maximum pixel value of the flat
+            f-lambda model where the 2D cutout data are considered good.  
+            Passed through to `~grizli.model.BeamCutout`.
+        
+        min_sens : float
+            See `~grizli.model.BeamCutout`.
+            
+        get_slice_header : bool
+            Passed to `~grizli.model.BeamCutout`.
+            
+        Returns
+        -------
+        beams : list
+            List of `~grizli.model.BeamCutout` objects.
+        
+        """
+        beams = self.compute_single_model(id, center_rd=center_rd, size=size, store=False, get_beams=[beam_id])
+        
+        out_beams = []
+        for flt, beam in zip(self.FLTs, beams):
+            try:
+                out_beam = model.BeamCutout(flt=flt, beam=beam[beam_id],
+                                        conf=flt.conf, min_mask=min_mask,
+                                        min_sens=min_sens,
+                                        mask_resid=mask_resid,
+                                        get_slice_header=get_slice_header)
+            except:
+                #print('Except: get_beams')
+                out_beams.append(None)
+                continue
+            
+            valid =  (out_beam.grism['SCI'] != 0) 
+            valid &= out_beam.fit_mask.reshape(out_beam.sh)               
+            hasdata = (valid.sum(axis=0) > 0).sum()
+            if hasdata*1./out_beam.model.shape[1] < min_overlap:
+                out_beams.append(None)
+                continue
+            
+            # Empty direct image?
+            if out_beam.beam.total_flux == 0:
+                out_beams.append(None)
+                continue
+                
+            if out_beam.fit_mask.sum() < min_valid_pix:    
+                out_beams.append(None)
+                continue
+                
+            out_beams.append(out_beam)
+            
+        return out_beams
+
+
     def refine_list(self, ids=[], mags=[], poly_order=3, mag_limits=[16,24], 
                     max_coeff=5, ds9=None, verbose=True, fcontam=0.5,
                     wave=np.linspace(0.2, 2.5e4, 100)):
@@ -5470,6 +5551,8 @@ def plot_all_beams_Jin(filename):
                 if j==1:
                     vmin = todo.data.min()
                     vmax = todo.data.max()
+                elif j==3: # s_con use s_sci's limits
+                    pass
                 else:
                     vmin,vmax = z.get_limits(todo.data)
                 ax.imshow(todo.data, origin='lower', interpolation='Nearest',

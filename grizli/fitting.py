@@ -3260,7 +3260,7 @@ class GroupFitter(object):
                 else:
                     axc.errorbar(w[clip]/zp1, fl[clip], er[clip], color=GRISM_COLORS[grism], alpha=f_alpha, marker='.', linestyle='None', zorder=1)
             if flm is not None:
-                axc.plot(w[clip]/zp1, flm[clip], color='r', alpha=f_alpha, linewidth=2, zorder=10) 
+                axc.plot(w[clip]/zp1, flm[clip], color='r', alpha=f_alpha, linewidth=2, zorder=10)
 
                 # Plot limits 
                 ep = np.percentile(er[clip], ylim_percentile)        

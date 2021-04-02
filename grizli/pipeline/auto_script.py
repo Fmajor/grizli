@@ -2597,7 +2597,7 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
         #     pfit = mb.template_at_z(z=0, templates=tspline, fit_background=True, fitter='lstsq', get_uncertainties=2)
             
         try:
-            fig1 = mb.oned_figure(figsize=[5,3], tfit=tfit, show_beams=show_beams, scale_on_stacked=True, ylim_percentile=5)
+            fig1 = mb.oned_figure(figsize=[10,6], tfit=tfit, show_beams=show_beams, scale_on_stacked=True, ylim_percentile=5)
             if oned_R:
                 outroot='{0}_{1:05d}.R{2:.0f}'.format(target, id, oned_R)
                 hdu = mb.oned_spectrum_to_hdu(outputfile=outroot+'.fits', 
@@ -2607,7 +2607,7 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
                 hdu = mb.oned_spectrum_to_hdu(outputfile=outroot+'.fits',
                                               tfit=tfit)
                 
-            fig1.savefig(outroot+'.png')
+            fig1.savefig(outroot+'.png', dpi=400)
             
         except:
             continue
@@ -2618,9 +2618,6 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
             mb.oned_figure(axc=ax, tfit=tfit, show_beams=show_beams, scale_on_stacked=True, ylim_percentile=5, loglam_1d=False)
             ax.set_xlim([axies_out[filter]['WMIN'], axies_out[filter]['WMAX']])
             ax.set_xlabel(axies_out[filter]['xlabel'])
-        beam_file = '{0}_{1:05d}.beams.fits'.format(target, id)
-        if os.path.exists(beam_file):
-            multifit.plot_all_beams_Jin(beam_file)
         fig.savefig('{0}_{1:05d}.stack.png'.format(target, id))
         tfig.savefig('{0}_{1:05d}.stack1d2d.png'.format(target, id), dpi=400)
 
@@ -2663,8 +2660,12 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
                 for k in range(1000): plt.close()
                 
             del(out)
-        except:
+        except Exception as e:
+            print(e)
             pass
+        #beam_file = '{0}_{1:05d}.beams.fits'.format(target, id)
+        #if os.path.exists(beam_file):
+        #    multifit.plot_all_beams_Jin(beam_file)
     
     # Re-save data with updated models
     if init_grp:
