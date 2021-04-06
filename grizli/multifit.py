@@ -1749,7 +1749,7 @@ class MultiBeam(GroupFitter):
         if verbose:
             print('Add beams: {0}\n      Now: {1}'.format(new.Ngrism, self.Ngrism))
         
-    def write_master_fits(self, verbose=True, get_hdu=False, strip=True, include_model=False, get_trace_table=True):
+    def write_master_fits(self, verbose=True, get_hdu=False, strip=True, include_model=False, get_trace_table=True, suffix=''):
         """Store all beams in a single HDU
         TBD
         """ 
@@ -1793,7 +1793,7 @@ class MultiBeam(GroupFitter):
         if get_hdu:
             return hdu
         
-        outfile = '{0}_{1:05d}.beams.fits'.format(self.group_name, self.id)
+        outfile = '{0}_{1:05d}.beams{2}.fits'.format(self.group_name, self.id, suffix)
         if verbose:
             print(outfile)
         

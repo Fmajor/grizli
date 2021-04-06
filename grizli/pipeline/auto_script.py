@@ -2653,6 +2653,8 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
             out = fitting.run_all_parallel(id, get_output_data=True, **fit_args, args_file=args_file)
             mb, st, fit, tfit, line_hdu = out
             
+            mb.write_master_fits(suffix="-fit")
+            
             spectrum_1d = [tfit['cont1d'].wave, tfit['cont1d'].flux]
             grp.compute_single_model(id, mag=-99, size=-1, store=False, spectrum_1d=spectrum_1d, get_beams=None, in_place=True, is_cgs=True)
             

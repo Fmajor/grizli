@@ -3171,6 +3171,7 @@ class GroupFitter(object):
                 
                 clean = beam.grism['SCI'] - beam.contam 
                 if tfit is not None:
+                    ### print('bg {:03d}:{:.5e} clean:{:.5e}'.format(i, tfit['cfit']['bg {0:03d}'.format(i)][0], np.median(clean)), end='')
                     clean -= tfit['cfit']['bg {0:03d}'.format(i)][0]
 
                 if m_i is not None:
@@ -3238,6 +3239,14 @@ class GroupFitter(object):
             clip &= (er > 0)
             if clip.sum() == 0:
                 continue
+            ### print('fluxm:{:.5e}ivar:{:.5e}mask:{:.5e}sens:{:.5e}flat:{:.5e}'.format(
+            ###     np.median(fl),
+            ###     np.median(beam.ivar),
+            ###     np.median(b_mask),
+            ###     np.nanmedian(fl),
+            ###     np.median(sens),
+            ###     np.median(beam.flat_flam),
+            ### ))
             
             fl *= unit_corr/pscale#/1.e-19
             #flc *= unit_corr/pscale#/1.e-19
@@ -3246,7 +3255,6 @@ class GroupFitter(object):
                 flm *= unit_corr#/1.e-19
             
             f_alpha = 1./(self.Ngrism[grism.upper()])*0.8 #**0.5
-            
             # Plot
             # pscale = 1.
             # if hasattr(self, 'pscale'):
