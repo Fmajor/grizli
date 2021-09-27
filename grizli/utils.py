@@ -653,7 +653,9 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
         
         N = len(output_list)
         for i in range(N):
+            ##<< Fmajor:
             output_list[i]['footprints'] = []
+            ##>>
             for j in range(len(output_list[i]['files'])):
                 flt_file = output_list[i]['files'][j]
                 if (not os.path.exists(flt_file)) & os.path.exists('../RAW/'+flt_file):
@@ -672,7 +674,9 @@ def parse_flt_files(files=[], info=None, uniquename=False, use_visit=False,
                     wcs_j = pywcs.WCS(flt_j['SCI',1], fobj=flt_j)
                     
                 fp_j = Polygon(wcs_j.calc_footprint())
+                ##<< Fmajor:
                 output_list[i]['footprints'].append(fp_j)
+                ##>>
                 if j == 0:
                     fp_i = fp_j.buffer(1./3600)
                 else:

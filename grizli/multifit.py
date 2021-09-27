@@ -16,7 +16,9 @@ import astropy.io.fits as pyfits
 import astropy.wcs as pywcs
 
 import astropy.units as u
+##<< Fmajor:
 from astropy.visualization import ZScaleInterval
+##>>
 
 ## local imports
 from . import utils
@@ -690,7 +692,7 @@ class GroupFLT():
             out_beams.append(out_beam)
             
         return out_beams
-    
+    ##<< Fmajor: 
     def get_all_beams(self, id, size=10, center_rd=None, beam_id='A',
                   min_overlap=0.1, min_valid_pix=10, min_mask=0.01, 
                   min_sens=0.08, mask_resid=True, get_slice_header=True):
@@ -770,7 +772,7 @@ class GroupFLT():
             out_beams.append(out_beam)
             
         return out_beams
-
+    ##>>
 
     def refine_list(self, ids=[], mags=[], poly_order=3, mag_limits=[16,24], 
                     max_coeff=5, ds9=None, verbose=True, fcontam=0.5,
@@ -1748,8 +1750,9 @@ class MultiBeam(GroupFitter):
         self._parse_beams()
         if verbose:
             print('Add beams: {0}\n      Now: {1}'.format(new.Ngrism, self.Ngrism))
-        
+    ##<< Fmajor: 
     def write_master_fits(self, verbose=True, get_hdu=False, strip=True, include_model=False, get_trace_table=True, suffix=''):
+    ##>>
         """Store all beams in a single HDU
         TBD
         """ 
@@ -1774,6 +1777,7 @@ class MultiBeam(GroupFitter):
             hdu[0].header['FILE{0:04d}'.format(ib)] = (beam.grism.parent_file, 'Grism parent file')
             hdu[0].header['GRIS{0:04d}'.format(ib)] = (beam.grism.filter, 'Grism element')
             hdu[0].header['NEXT{0:04d}'.format(ib)] = (count[-1], 'Number of extensions')
+            ##<< Fmajor: 
             pas = self.PA[beam.grism.filter]
             for pa in pas:
                 if ib in pas[pa]:
@@ -1781,6 +1785,7 @@ class MultiBeam(GroupFitter):
                     break
             else:
                 hdu[0].header['PA{0:04d}'.format(ib)] = (-1, 'PA')
+            ##>>
             try:
                 exptime[beam.grism.filter] += beam.grism.header['EXPTIME']
             except:
@@ -1792,8 +1797,9 @@ class MultiBeam(GroupFitter):
             
         if get_hdu:
             return hdu
-        
+        ##<< Fmajor: 
         outfile = '{0}_{1:05d}.beams{2}.fits'.format(self.group_name, self.id, suffix)
+        ##>>
         if verbose:
             print(outfile)
         
@@ -3713,7 +3719,9 @@ class MultiBeam(GroupFitter):
         
         return chi2/self.DoF    
     
+    ##<< Fmajor: add onedtwod option to generate the 1D-2D figure
     def drizzle_grisms_and_PAs(self, size=10, fcontam=0, flambda=False, scale=1, pixfrac=0.5, kernel='square', make_figure=True, usewcs=False, zfit=None, diff=True, grism_list=['G800L','G102','G141','F090W','F115W','F150W','F200W','F356W','F410M','F444W'], mask_segmentation=True, onedtwod=False):
+    ##>>
         """Make figure showing spectra at different orients/grisms
         
         TBD
@@ -4016,12 +4024,13 @@ class MultiBeam(GroupFitter):
             
         if make_figure:
             fig = show_drizzle_HDU(output_hdu, diff=diff)
+            ##<< Fmajor:
             if onedtwod:
                 tfig,out_axies = show_drizzle_HDU_Jin(output_hdu, diff=diff)
                 return output_hdu, fig, tfig, out_axies
             else:
+            ##>>
                 return output_hdu, fig
-
         else:
             return output_hdu #all_hdus
     
@@ -5340,6 +5349,7 @@ def drizzle_2d_spectrum_wcs(beams, data=None, wlimit=[1.05, 1.75], dlam=50,
     
     return hdul
 
+##<< Fmajor: debug function
 def show_drizzle_HDU_Jin(hdu, diff=True, mask_segmentation=True):
     """Make a figure from the multiple extensions in the drizzled grism file.
     
@@ -5564,3 +5574,4 @@ def plot_all_beams_Jin(filename):
     gs.tight_layout(fig, pad=0)
     fig.savefig(outfile)
     plt.close(fig)
+##>>

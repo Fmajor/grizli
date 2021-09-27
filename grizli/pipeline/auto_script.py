@@ -934,8 +934,10 @@ def fetch_files(field_root='j142724+334246', HOME_PATH='/Volumes/Pegasus/Grizli/
     
     #### Reprocess the RAWs into FLTs    
     if reprocess_parallel:
+        ## <<Fmajor: to print the result of the `reprocess` function
         result = os.system("python -c 'from grizli.pipeline import reprocess; reprocess.reprocess_wfc3ir(parallel={0},clean_dark_refs={1})'".format(reprocess_parallel, reprocess_clean_darks))
-        print('parallel run result:', result)
+        print('===> parallel run result:', result)
+        ## >>
     else:
         from grizli.pipeline import reprocess
         reprocess.reprocess_wfc3ir(parallel=False, 
@@ -2598,7 +2600,9 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
         #     pfit = mb.template_at_z(z=0, templates=tspline, fit_background=True, fitter='lstsq', get_uncertainties=2)
             
         try:
+            ##<< Fmajor: the default [5,3] image is too small to see clearly
             fig1 = mb.oned_figure(figsize=[10,6], tfit=tfit, show_beams=show_beams, scale_on_stacked=True, ylim_percentile=5)
+            ##>>
             if oned_R:
                 outroot='{0}_{1:05d}.R{2:.0f}'.format(target, id, oned_R)
                 hdu = mb.oned_spectrum_to_hdu(outputfile=outroot+'.fits', 
@@ -2608,11 +2612,14 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
                 hdu = mb.oned_spectrum_to_hdu(outputfile=outroot+'.fits',
                                               tfit=tfit)
                 
+            ##<< Fmajor: add dpi to make the output more clearly
             fig1.savefig(outroot+'.png', dpi=400)
+            ##>>
             
         except:
             continue
 
+        ##<< Fmajor：modify this function, add the `onedtwod` option to generate the 1D-2D figure
         hdu, fig, tfig, axies_out = mb.drizzle_grisms_and_PAs(fcontam=0.5, flambda=False, kernel='point', size=32, zfit=tfit, diff=diff, onedtwod=True)
         for filter in axies_out:
             ax = axies_out[filter]['ax']
@@ -2621,6 +2628,7 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
             ax.set_xlabel(axies_out[filter]['xlabel'])
         fig.savefig('{0}_{1:05d}.stack.png'.format(target, id))
         tfig.savefig('{0}_{1:05d}.stack1d2d.png'.format(target, id), dpi=400)
+        ##>>
 
         hdu.writeto('{0}_{1:05d}.stack.fits'.format(target, id), 
                     overwrite=True)
@@ -2654,8 +2662,9 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
             out = fitting.run_all_parallel(id, get_output_data=True, **fit_args, args_file=args_file)
             mb, st, fit, tfit, line_hdu = out
             
+            ##<< Fmajor：also output the fit file
             mb.write_master_fits(suffix="-fit")
-            
+            ##>>
             spectrum_1d = [tfit['cont1d'].wave, tfit['cont1d'].flux]
             grp.compute_single_model(id, mag=-99, size=-1, store=False, spectrum_1d=spectrum_1d, get_beams=None, in_place=True, is_cgs=True)
             
@@ -2663,12 +2672,14 @@ def extract(field_root='j142724+334246', maglim=[13,24], prior=None, MW_EBV=0.00
                 for k in range(1000): plt.close()
                 
             del(out)
+        ##<< Fmajor：log the error
         except Exception as e:
             print(e)
             pass
         #beam_file = '{0}_{1:05d}.beams.fits'.format(target, id)
         #if os.path.exists(beam_file):
         #    multifit.plot_all_beams_Jin(beam_file)
+        ##>>
     
     # Re-save data with updated models
     if init_grp:

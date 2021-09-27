@@ -3239,6 +3239,7 @@ class GroupFitter(object):
             clip &= (er > 0)
             if clip.sum() == 0:
                 continue
+            ##<< Fmajor: some debug string
             ### print('fluxm:{:.5e}ivar:{:.5e}mask:{:.5e}sens:{:.5e}flat:{:.5e}'.format(
             ###     np.median(fl),
             ###     np.median(beam.ivar),
@@ -3247,6 +3248,7 @@ class GroupFitter(object):
             ###     np.median(sens),
             ###     np.median(beam.flat_flam),
             ### ))
+            ##>>
             
             fl *= unit_corr/pscale#/1.e-19
             #flc *= unit_corr/pscale#/1.e-19
@@ -3255,6 +3257,7 @@ class GroupFitter(object):
                 flm *= unit_corr#/1.e-19
             
             f_alpha = 1./(self.Ngrism[grism.upper()])*0.8 #**0.5
+
             # Plot
             # pscale = 1.
             # if hasattr(self, 'pscale'):
@@ -3294,8 +3297,10 @@ class GroupFitter(object):
         
         # Cleanup
         axc.set_xlim(wmin/zp1, wmax/zp1)
+        ##<< Fmajor: 
         if loglam_1d:
             axc.semilogx(subsx=[wmax])
+        ##>>
         #axc.set_xticklabels([])
         axc.set_xlabel(xlabel)
         axc.set_ylabel(unit_label)
