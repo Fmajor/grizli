@@ -19,6 +19,7 @@ merge-from-xwang:
 	git fetch xwang xwang
 	git merge xwang/xwang
 push:
+	git checkout jin
 	git push jin jin
 pull-full:
 	git pull --all
