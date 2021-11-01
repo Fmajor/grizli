@@ -2,6 +2,8 @@
 
 all:
 	@cat makefile
+install:
+	conda env list && python setup.py develop
 git-remote:
 	git remote -v
 git-set-remotes:
